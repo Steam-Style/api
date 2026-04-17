@@ -1,0 +1,17 @@
+[project]
+name = "steam-style-api"
+version = "0.1.0"
+description = "API for Steam Style"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "uvicorn>=0.44.0",
+    "litestar>=2.21.1",
+    "steam-style-embeddings",
+    "pydantic>=2.13.2",
+    "qdrant-client>=1.17.1",
+    "pydantic-settings>=2.13.1",
+]
+
+[tool.uv.sources]
+steam-style-embeddings = { git = "https://github.com/Steam-Style/ingestion", subdirectory = "packages/steam-style-embeddings", branch = "master" }
