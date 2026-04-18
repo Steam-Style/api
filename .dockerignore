@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.git/
+.gitignore
+certbot/
+.vscode/
+.DS_Store
+Thumbs.db
