@@ -27,7 +27,7 @@ color_embedder = ColorEmbedder(
 )
 siglip_embedder = SiglipEmbedder(
     model_name=settings.MODEL_NAME, device=settings.DEVICE)
-qdrant_client = QdrantClient(url="localhost:6333")
+qdrant_client = QdrantClient(url=settings.DATABASE_URL)
 
 
 def get_text_embedding(text: str) -> Optional[Embedding]:
@@ -67,7 +67,7 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
         decoded_category = unquote_plus(data.category).lower().strip()
         must_conditions.append(
             models.FieldCondition(
-                key="info.category",
+                key="item.category",
                 match=models.MatchValue(value=decoded_category),
             )
         )
@@ -77,14 +77,14 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
         if value is True:
             must_conditions.append(
                 models.FieldCondition(
-                    key=f"info.{prop}",
+                    key=f"item.{prop}",
                     match=models.MatchValue(value=True),
                 )
             )
         elif value is False:
             must_not_conditions.append(
                 models.FieldCondition(
-                    key=f"info.{prop}",
+                    key=f"item.{prop}",
                     match=models.MatchValue(value=True),
                 )
             )
@@ -98,13 +98,13 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
 def _get_sort_order(sort: Optional[str]) -> Optional[models.OrderBy]:
     if sort == "newest":
         return models.OrderBy(
-            key="timestamps.created", direction=models.Direction.DESC)
+            key="timestamps.created_at", direction=models.Direction.DESC)
     if sort == "oldest":
         return models.OrderBy(
-            key="timestamps.created", direction=models.Direction.ASC)
+            key="timestamps.created_at", direction=models.Direction.ASC)
     if sort == "updated":
         return models.OrderBy(
-            key="timestamps.updated", direction=models.Direction.DESC)
+            key="timestamps.updated_at", direction=models.Direction.DESC)
     return None
 
 
@@ -160,11 +160,27 @@ def _build_prefetch(
     if has_similar:
         assert data.similar_to is not None
         try:
-            similar_points = qdrant_client.retrieve(
+            similar_points, _ = qdrant_client.scroll(
                 collection_name=settings.COLLECTION_NAME,
-                ids=[data.similar_to],
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="item.id",
+                            match=models.MatchValue(value=data.similar_to),
+                        )
+                    ]
+                ),
+                limit=1,
                 with_vectors=True,
+                with_payload=False,
             )
+
+            if not similar_points:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Item not found for similar_to={data.similar_to}",
+                )
+
             similar_point = similar_points[0]
             vector_data = similar_point.vector
 
@@ -325,7 +341,7 @@ async def get_item(item_id: int) -> dict:
             scroll_filter=models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="info.item_id",
+                        key="item.id",
                         match=models.MatchValue(value=item_id)
                     )
                 ]
