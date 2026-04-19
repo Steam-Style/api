@@ -45,8 +45,10 @@ class SearchRequest(BaseModel):
     query: Optional[str] = None
     similar_to: Optional[int] = None
     colors: Optional[List[str]] = None
-    category: str = Field(
-        default="all", description="Filter by category. 'all' = all categories, empty = no items.")
+    category: List[str] = Field(
+        default_factory=list,
+        description="Filter by category. 'all'=all categories, empty=no items.",
+    )
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0, description="Offset for pagination")
     sort: Optional[str] = Field(
@@ -63,14 +65,23 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
     must_conditions: List[models.Condition] = []
     must_not_conditions: List[models.Condition] = []
 
-    if data.category.lower() != "all":
-        decoded_category = unquote_plus(data.category).lower().strip()
-        must_conditions.append(
+    decoded_categories = [
+        unquote_plus(category).lower().strip()
+        for category in data.category
+        if category and category.lower().strip() != "all"
+    ]
+    if decoded_categories:
+        category_conditions: List[models.Condition] = [
             models.FieldCondition(
                 key="item.category",
                 match=models.MatchValue(value=decoded_category),
             )
-        )
+            for decoded_category in decoded_categories
+        ]
+        if len(category_conditions) == 1:
+            must_conditions.extend(category_conditions)
+        else:
+            must_conditions.append(models.Filter(should=category_conditions))
 
     for prop in BOOLEAN_FILTER_FIELDS:
         value = getattr(data, prop)
@@ -279,8 +290,10 @@ async def search(
         default=None, description="Item ID to find similar items for"),
     color: Optional[List[str]] = Parameter(
         default=None, description="Colors to filter by"),
-    category: str = Parameter(
-        default="all", description="Filter by category. 'all' = all categories, empty = no items."),
+    category: Optional[List[str]] = Parameter(
+        default=None,
+        description="Filter by category. 'all'=all categories, empty=no items.",
+    ),
     limit: int = Parameter(default=10, ge=1, le=100),
     offset: int = Parameter(
         default=0, ge=0, description="Offset for pagination"),
@@ -293,11 +306,12 @@ async def search(
     transparent: Optional[bool] = Parameter(
         default=None, description="True=only transparent, False=exclude transparent, None=all"),
 ) -> dict:
+    category_values = category if category is not None else ["all"]
     data = SearchRequest(
         query=search_query,
         similar_to=similar_to,
         colors=color,
-        category=category,
+        category=category_values,
         limit=limit,
         offset=offset,
         sort=sort,
@@ -306,7 +320,13 @@ async def search(
         transparent=transparent
     )
 
-    if data.category == "":
+    normalized_categories = [
+        unquote_plus(category_value).lower().strip()
+        for category_value in data.category
+        if category_value and category_value.strip()
+    ]
+
+    if category is not None and not normalized_categories:
         return {"results": []}
 
     has_query = data.query is not None and len(data.query.strip()) > 0
