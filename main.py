@@ -2,6 +2,9 @@ import logging
 from typing import Any, Dict, List, Optional, cast
 from urllib.parse import unquote_plus
 
+from litestar.openapi import OpenAPIConfig
+from litestar.openapi.plugins import SwaggerRenderPlugin
+from litestar.response import Redirect
 from steam_style_embeddings import ColorEmbedder, SiglipEmbedder, Embedding
 from config import settings
 
@@ -277,13 +280,13 @@ def _query_items(
     return [cast(Dict[str, Any], p.payload) for p in results.points]
 
 
-@get("/")
+@get("/", include_in_schema=False)
 async def index() -> dict:
     return {"status": "ok", "message": "Steam Style Query API"}
 
 
-@get("/search")
-async def search(
+@get("/search", tags=["Items"])
+async def search_items(
     search_query: Optional[str] = Parameter(
         query="query", default=None, description="Search query text"),
     similar_to: Optional[int] = Parameter(
@@ -353,7 +356,7 @@ async def search(
     return {"results": _query_items(data, query_filter, prefetch)}
 
 
-@get("/item/{item_id:int}")
+@get("/item/{item_id:int}", tags=["Items"])
 async def get_item(item_id: int) -> dict:
     try:
         results, _ = qdrant_client.scroll(
@@ -380,10 +383,19 @@ async def get_item(item_id: int) -> dict:
 
     return cast(Dict[str, Any], results[0].payload)
 
-
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app = Litestar([index, search, get_item], cors_config=cors_config)
+app = Litestar(
+    route_handlers=[index, search_items, get_item],
+    openapi_config=OpenAPIConfig(
+        title="Steam Style",
+        version="1.0.0",
+        path="/docs",
+        render_plugins=[SwaggerRenderPlugin()],
+        root_schema_site="swagger"
+    ),
+    cors_config=cors_config
+)
 
 
 if __name__ == "__main__":
