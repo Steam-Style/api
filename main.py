@@ -55,7 +55,7 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0, description="Offset for pagination")
     sort: Optional[str] = Field(
-        default=None, description="Sort by: 'newest', 'oldest', 'updated'")
+        default=None, description="Sort by: 'newest', 'oldest', 'updated', 'random'")
     animated: Optional[bool] = Field(
         default=None, description="True=only animated, False=exclude animated, None=all")
     tiled: Optional[bool] = Field(
@@ -128,6 +128,23 @@ def _scroll_items(
     offset: int,
     sort: Optional[str],
 ) -> List[Dict[str, Any]]:
+    if sort == "random":
+        try:
+            results = qdrant_client.query_points(
+                collection_name=settings.COLLECTION_NAME,
+                query=models.SampleQuery(sample=models.Sample.RANDOM),
+                query_filter=query_filter,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+            )
+        except Exception as e:
+            logger.exception("Random query points error")
+            raise HTTPException(
+                status_code=500, detail=f"Random query failed: {str(e)}") from e
+
+        return [cast(Dict[str, Any], p.payload) for p in results.points]
+
     try:
         results = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -301,7 +318,7 @@ async def search_items(
     offset: int = Parameter(
         default=0, ge=0, description="Offset for pagination"),
     sort: Optional[str] = Parameter(
-        default="newest", description="Sort by: 'newest', 'oldest', 'updated'"),
+        default="newest", description="Sort by: 'newest', 'oldest', 'updated', 'random'"),
     animated: Optional[bool] = Parameter(
         default=None, description="True=only animated, False=exclude animated, None=all"),
     tiled: Optional[bool] = Parameter(
