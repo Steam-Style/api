@@ -68,6 +68,14 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
     must_conditions: List[models.Condition] = []
     must_not_conditions: List[models.Condition] = []
 
+    if data.similar_to is not None:
+        must_not_conditions.append(
+            models.FieldCondition(
+                key="item.id",
+                match=models.MatchValue(value=data.similar_to),
+            )
+        )
+
     decoded_categories = [
         unquote_plus(category).lower().strip()
         for category in data.category
