@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Union, cast
 from urllib.parse import unquote_plus
 
 from litestar.openapi import OpenAPIConfig
@@ -373,8 +373,46 @@ async def search_items(
     return {"results": _query_items(data, query_filter, prefetch)}
 
 
+@get("/item/{app_id:int}/{item_name:str}", tags=["Items"])
+async def get_item_by_name(app_id: int, item_name: str) -> Union[dict, Redirect]:
+    try:
+        results, _ = qdrant_client.scroll(
+            collection_name=settings.COLLECTION_NAME,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="app.id",
+                        match=models.MatchValue(value=app_id)
+                    ),
+                    models.FieldCondition(
+                        key="item.name",
+                        match=models.MatchValue(value=item_name)
+                    )
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.exception("Scroll error")
+        raise HTTPException(
+            status_code=500, detail=f"Database error: {str(e)}") from e
+
+    if not results:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    result_item = cast(Dict[str, Any], results[0].payload)
+    item_id = result_item.get("item", {}).get("id")
+
+    if item_id is None:
+        return cast(Dict[str, Any], results[0].payload)
+    else:
+        return Redirect(f"/item/{item_id}")
+
+
 @get("/item/{item_id:int}", tags=["Items"])
-async def get_item(item_id: int) -> dict:
+async def get_item_by_id(item_id: int) -> dict:
     try:
         results, _ = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -403,7 +441,7 @@ async def get_item(item_id: int) -> dict:
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app = Litestar(
-    route_handlers=[index, search_items, get_item],
+    route_handlers=[index, search_items, get_item_by_id, get_item_by_name],
     openapi_config=OpenAPIConfig(
         title="Steam Style",
         version="1.0.0",
