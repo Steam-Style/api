@@ -3,10 +3,10 @@ services:
     build: .
     container_name: "steam-style-api"
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      COLLECTION_NAME: ${COLLECTION_NAME:-Steam-Style-Items}
-      DEVICE: ${DEVICE:-cpu}
-      MODEL_NAME: ${MODEL_NAME:-google/siglip2-base-patch16-224}
+      - DATABASE_URL=${DATABASE_URL:?}
+      - COLLECTION_NAME=${COLLECTION_NAME:-Steam-Style-Items}
+      - DEVICE=${DEVICE:-cpu}
+      - MODEL_NAME=${MODEL_NAME:-google/siglip2-base-patch16-224}
     expose:
       - "8000"
     healthcheck:
