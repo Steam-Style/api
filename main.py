@@ -1,20 +1,20 @@
 import logging
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, cast
 from urllib.parse import unquote_plus
-
-from litestar.openapi import OpenAPIConfig
-from litestar.openapi.plugins import SwaggerRenderPlugin
-from litestar.response import Redirect
-from steam_style_embeddings import ColorEmbedder, SiglipEmbedder, Embedding
-from config import settings
 
 import uvicorn
 from litestar import Litestar, get
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import HTTPException
+from litestar.openapi import OpenAPIConfig
+from litestar.openapi.plugins import SwaggerRenderPlugin
 from litestar.params import Parameter
+from litestar.response import Redirect
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
+from steam_style_embeddings import ColorEmbedder, Embedding, SiglipEmbedder
+
+from config import settings
 
 BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent"]
 
@@ -33,7 +33,7 @@ siglip_embedder = SiglipEmbedder(
 qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
 
 
-def get_text_embedding(text: str) -> Optional[Embedding]:
+def get_text_embedding(text: str) -> Embedding | None:
     if not siglip_embedder.is_ready():
         return None
 
@@ -45,28 +45,28 @@ def get_text_embedding(text: str) -> Optional[Embedding]:
 
 
 class SearchRequest(BaseModel):
-    query: Optional[str] = None
-    similar_to: Optional[int] = None
-    colors: Optional[List[str]] = None
-    category: List[str] = Field(
+    query: str | None = None
+    similar_to: int | None = None
+    colors: list[str] | None = None
+    category: list[str] = Field(
         default_factory=list,
         description="Filter by category. 'all'=all categories, empty=no items.",
     )
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0, description="Offset for pagination")
-    sort: Optional[str] = Field(
+    sort: str | None = Field(
         default=None, description="Sort by: 'newest', 'oldest', 'updated', 'random'")
-    animated: Optional[bool] = Field(
+    animated: bool | None = Field(
         default=None, description="True=only animated, False=exclude animated, None=all")
-    tiled: Optional[bool] = Field(
+    tiled: bool | None = Field(
         default=None, description="True=only tiled, False=exclude tiled, None=all")
-    transparent: Optional[bool] = Field(
+    transparent: bool | None = Field(
         default=None, description="True=only transparent, False=exclude transparent, None=all")
 
 
 def _build_query_filter(data: SearchRequest) -> models.Filter:
-    must_conditions: List[models.Condition] = []
-    must_not_conditions: List[models.Condition] = []
+    must_conditions: list[models.Condition] = []
+    must_not_conditions: list[models.Condition] = []
 
     if data.similar_to is not None:
         must_not_conditions.append(
@@ -82,7 +82,7 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
         if category and category.lower().strip() != "all"
     ]
     if decoded_categories:
-        category_conditions: List[models.Condition] = [
+        category_conditions: list[models.Condition] = [
             models.FieldCondition(
                 key="item.category",
                 match=models.MatchValue(value=decoded_category),
@@ -117,7 +117,7 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
     )
 
 
-def _get_sort_order(sort: Optional[str]) -> Optional[models.OrderBy]:
+def _get_sort_order(sort: str | None) -> models.OrderBy | None:
     if sort == "newest":
         return models.OrderBy(
             key="timestamps.created_at", direction=models.Direction.DESC)
@@ -134,8 +134,8 @@ def _scroll_items(
     query_filter: models.Filter,
     limit: int,
     offset: int,
-    sort: Optional[str],
-) -> List[Dict[str, Any]]:
+    sort: str | None,
+) -> list[dict[str, Any]]:
     if sort == "random":
         try:
             results = qdrant_client.query_points(
@@ -150,9 +150,9 @@ def _scroll_items(
         except Exception as e:
             logger.exception("Random query points error")
             raise HTTPException(
-                status_code=500, detail=f"Random query failed: {str(e)}") from e
+                status_code=500, detail=f"Random query failed: {e!s}") from e
 
-        return [cast(Dict[str, Any], p.payload) for p in results.points]
+        return [cast(dict[str, Any], p.payload) for p in results.points]
 
     try:
         results = qdrant_client.scroll(
@@ -166,16 +166,16 @@ def _scroll_items(
     except Exception as e:
         logger.exception("Scroll error")
         raise HTTPException(
-            status_code=500, detail=f"Scroll failed: {str(e)}") from e
+            status_code=500, detail=f"Scroll failed: {e!s}") from e
 
-    return [cast(Dict[str, Any], p.payload) for p in results[0][offset:]]
+    return [cast(dict[str, Any], p.payload) for p in results[0][offset:]]
 
 
 def _build_prefetch(
     data: SearchRequest,
     query_filter: models.Filter,
-) -> List[models.Prefetch]:
-    prefetch: List[models.Prefetch] = []
+) -> list[models.Prefetch]:
+    prefetch: list[models.Prefetch] = []
     prefetch_limit = max(200, data.limit + data.offset)
 
     has_colors = data.colors is not None and len(data.colors) > 0
@@ -249,7 +249,7 @@ def _build_prefetch(
             logger.exception("Error retrieving similar item embedding")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to retrieve similar item: {str(e)}",
+                detail=f"Failed to retrieve similar item: {e!s}",
             ) from e
 
     if has_query:
@@ -271,8 +271,8 @@ def _build_prefetch(
 def _query_items(
     data: SearchRequest,
     query_filter: models.Filter,
-    prefetch: List[models.Prefetch],
-) -> List[Dict[str, Any]]:
+    prefetch: list[models.Prefetch],
+) -> list[dict[str, Any]]:
     if len(prefetch) > 1:
         try:
             results = qdrant_client.query_points(
@@ -286,7 +286,7 @@ def _query_items(
         except Exception as e:
             logger.exception("Query points error (fusion)")
             raise HTTPException(
-                status_code=500, detail=f"Query points failed: {str(e)}") from e
+                status_code=500, detail=f"Query points failed: {e!s}") from e
     else:
         try:
             results = qdrant_client.query_points(
@@ -301,9 +301,9 @@ def _query_items(
         except Exception as e:
             logger.exception("Query points error")
             raise HTTPException(
-                status_code=500, detail=f"Query points failed: {str(e)}") from e
+                status_code=500, detail=f"Query points failed: {e!s}") from e
 
-    return [cast(Dict[str, Any], p.payload) for p in results.points]
+    return [cast(dict[str, Any], p.payload) for p in results.points]
 
 
 @get("/", include_in_schema=False)
@@ -313,26 +313,26 @@ async def index() -> dict:
 
 @get("/search", tags=["Items"])
 async def search_items(
-    search_query: Optional[str] = Parameter(
+    search_query: str | None = Parameter(
         query="query", default=None, description="Search query text"),
-    similar_to: Optional[int] = Parameter(
+    similar_to: int | None = Parameter(
         default=None, description="Item ID to find similar items for"),
-    color: Optional[List[str]] = Parameter(
+    color: list[str] | None = Parameter(
         default=None, description="Colors to filter by"),
-    category: Optional[List[str]] = Parameter(
+    category: list[str] | None = Parameter(
         default=None,
         description="Filter by category. 'all'=all categories, empty=no items.",
     ),
     limit: int = Parameter(default=10, ge=1, le=100),
     offset: int = Parameter(
         default=0, ge=0, description="Offset for pagination"),
-    sort: Optional[str] = Parameter(
+    sort: str | None = Parameter(
         default="newest", description="Sort by: 'newest', 'oldest', 'updated', 'random'"),
-    animated: Optional[bool] = Parameter(
+    animated: bool | None = Parameter(
         default=None, description="True=only animated, False=exclude animated, None=all"),
-    tiled: Optional[bool] = Parameter(
+    tiled: bool | None = Parameter(
         default=None, description="True=only tiled, False=exclude tiled, None=all"),
-    transparent: Optional[bool] = Parameter(
+    transparent: bool | None = Parameter(
         default=None, description="True=only transparent, False=exclude transparent, None=all"),
 ) -> dict:
     category_values = category if category is not None else ["all"]
@@ -383,7 +383,7 @@ async def search_items(
 
 
 @get("/item/{app_id:int}/{item_name:str}", tags=["Items"])
-async def get_item_by_name(app_id: int, item_name: str) -> Union[dict, Redirect]:
+async def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
     try:
         results, _ = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -406,16 +406,16 @@ async def get_item_by_name(app_id: int, item_name: str) -> Union[dict, Redirect]
     except Exception as e:
         logger.exception("Scroll error")
         raise HTTPException(
-            status_code=500, detail=f"Database error: {str(e)}") from e
+            status_code=500, detail=f"Database error: {e!s}") from e
 
     if not results:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    result_item = cast(Dict[str, Any], results[0].payload)
+    result_item = cast(dict[str, Any], results[0].payload)
     item_id = result_item.get("item", {}).get("id")
 
     if item_id is None:
-        return cast(Dict[str, Any], results[0].payload)
+        return cast(dict[str, Any], results[0].payload)
     else:
         return Redirect(f"/item/{item_id}")
 
@@ -440,12 +440,12 @@ async def get_item_by_id(item_id: int) -> dict:
     except Exception as e:
         logger.exception("Scroll error")
         raise HTTPException(
-            status_code=500, detail=f"Database error: {str(e)}") from e
+            status_code=500, detail=f"Database error: {e!s}") from e
 
     if not results:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    return cast(Dict[str, Any], results[0].payload)
+    return cast(dict[str, Any], results[0].payload)
 
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
