@@ -30,7 +30,7 @@ color_embedder = ColorEmbedder(
 )
 siglip_embedder = SiglipEmbedder(
     model_name=settings.MODEL_NAME, device=settings.DEVICE)
-qdrant_client = QdrantClient(url=settings.DATABASE_URL)
+qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
 
 
 def get_text_embedding(text: str) -> Optional[Embedding]:
@@ -145,6 +145,7 @@ def _scroll_items(
                 limit=limit,
                 offset=offset,
                 with_payload=True,
+                with_vectors=False
             )
         except Exception as e:
             logger.exception("Random query points error")
