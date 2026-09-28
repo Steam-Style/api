@@ -1000,7 +1000,7 @@ dev = [{ name = "ruff", specifier = ">=0.16.3" }]
 [[package]]
 name = "steam-style-embeddings"
 version = "0.1.0"
-source = { git = "https://github.com/Steam-Style/ingestion?subdirectory=packages%2Fsteam-style-embeddings&branch=master#fe9054e5e1b5410ac1f43ffa915549a72a95bcb1" }
+source = { git = "https://github.com/Steam-Style/ingestion?subdirectory=packages%2Fsteam-style-embeddings&branch=master#ab91a0025881d97b6f9a2cd013e049136191b127" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },

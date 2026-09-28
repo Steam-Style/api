@@ -29,7 +29,7 @@ color_embedder = ColorEmbedder(
     power=settings.COLOR_POWER,
 )
 siglip_embedder = SiglipEmbedder(
-    model_name=settings.MODEL_NAME, device=settings.DEVICE)
+    model_name=settings.MODEL_NAME, device=settings.DEVICE, load_vision=False)
 qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
 
 
