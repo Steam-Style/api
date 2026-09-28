@@ -4,7 +4,7 @@
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/Steam-Style)](https://github.com/sponsors/Steam-Style)
 [![Demo](https://img.shields.io/badge/Demo-green)](https://api.steam.style)
 
-This repository contains the ingestion portion of the [Steam Style project](https://www.steam.style), which functions as the portion of the project responsible for handling querying of the vector database through the API. The contents of the database is collected and processed from the Steam web API through a [a separate repository](https://github.com/Steam-Style/ingestion)
+This repository contains the API portion of the [Steam Style project](https://www.steam.style), which functions as the portion of the project responsible for handling querying of the vector database through the API. The contents of the database is collected and processed from the Steam web API through a [a separate repository](https://github.com/Steam-Style/ingestion)
 
 ## Running
 

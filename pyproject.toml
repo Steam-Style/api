@@ -9,12 +9,19 @@ dependencies = [
     "litestar>=2.21.1",
     "steam-style-embeddings",
     "pydantic>=2.13.2",
-    "qdrant-client>=1.17.1",
+    "qdrant-client>=1.19.1",
     "pydantic-settings>=2.13.1",
+    "torch>=2.13.0",
 ]
 
 [tool.uv.sources]
 steam-style-embeddings = { git = "https://github.com/Steam-Style/ingestion", subdirectory = "packages/steam-style-embeddings", branch = "master" }
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [
