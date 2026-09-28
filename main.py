@@ -117,16 +117,18 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
     )
 
 
-def _get_sort_order(sort: str | None) -> models.OrderBy | None:
+def _get_sort_query(sort: str | None) -> models.OrderByQuery | models.SampleQuery | None:
     if sort == "newest":
-        return models.OrderBy(
-            key="timestamps.created_at", direction=models.Direction.DESC)
+        return models.OrderByQuery(order_by=models.OrderBy(
+            key="timestamps.created_at", direction=models.Direction.DESC))
     if sort == "oldest":
-        return models.OrderBy(
-            key="timestamps.created_at", direction=models.Direction.ASC)
+        return models.OrderByQuery(order_by=models.OrderBy(
+            key="timestamps.created_at", direction=models.Direction.ASC))
     if sort == "updated":
-        return models.OrderBy(
-            key="timestamps.updated_at", direction=models.Direction.DESC)
+        return models.OrderByQuery(order_by=models.OrderBy(
+            key="timestamps.updated_at", direction=models.Direction.DESC))
+    if sort == "random":
+        return models.SampleQuery(sample=models.Sample.RANDOM)
     return None
 
 
@@ -136,39 +138,22 @@ def _scroll_items(
     offset: int,
     sort: str | None,
 ) -> list[dict[str, Any]]:
-    if sort == "random":
-        try:
-            results = qdrant_client.query_points(
-                collection_name=settings.COLLECTION_NAME,
-                query=models.SampleQuery(sample=models.Sample.RANDOM),
-                query_filter=query_filter,
-                limit=limit,
-                offset=offset,
-                with_payload=True,
-                with_vectors=False
-            )
-        except Exception as e:
-            logger.exception("Random query points error")
-            raise HTTPException(
-                status_code=500, detail=f"Random query failed: {e!s}") from e
-
-        return [cast(dict[str, Any], p.payload) for p in results.points]
-
     try:
-        results = qdrant_client.scroll(
+        results = qdrant_client.query_points(
             collection_name=settings.COLLECTION_NAME,
-            scroll_filter=query_filter,
-            limit=limit + offset,
+            query=_get_sort_query(sort),
+            query_filter=query_filter,
+            limit=limit,
+            offset=offset,
             with_payload=True,
             with_vectors=False,
-            order_by=_get_sort_order(sort),
         )
     except Exception as e:
         logger.exception("Scroll error")
         raise HTTPException(
             status_code=500, detail=f"Scroll failed: {e!s}") from e
 
-    return [cast(dict[str, Any], p.payload) for p in results[0][offset:]]
+    return [cast(dict[str, Any], p.payload) for p in results.points]
 
 
 def _build_prefetch(
@@ -200,57 +185,48 @@ def _build_prefetch(
     if has_similar:
         assert data.similar_to is not None
         try:
-            similar_points, _ = qdrant_client.scroll(
+            similar_points = qdrant_client.retrieve(
                 collection_name=settings.COLLECTION_NAME,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="item.id",
-                            match=models.MatchValue(value=data.similar_to),
-                        )
-                    ]
-                ),
-                limit=1,
+                ids=[data.similar_to],
                 with_vectors=True,
                 with_payload=False,
             )
-
-            if not similar_points:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Item not found for similar_to={data.similar_to}",
-                )
-
-            similar_point = similar_points[0]
-            vector_data = similar_point.vector
-
-            if not isinstance(vector_data, dict) or "image" not in vector_data:
-                raise ValueError("Similar item is missing image vector")
-
-            similar_image_emb = vector_data["image"]
-            prefetch.append(
-                models.Prefetch(
-                    query=similar_image_emb,
-                    using="image",
-                    filter=query_filter,
-                    limit=prefetch_limit,
-                )
-            )
-            if "color" in vector_data:
-                prefetch.append(
-                    models.Prefetch(
-                        query=vector_data["color"],
-                        using="color",
-                        filter=query_filter,
-                        limit=prefetch_limit,
-                    )
-                )
         except Exception as e:
             logger.exception("Error retrieving similar item embedding")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to retrieve similar item: {e!s}",
             ) from e
+
+        if not similar_points:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Item not found for similar_to={data.similar_to}",
+            )
+
+        vector_data = similar_points[0].vector
+
+        if not isinstance(vector_data, dict) or "image" not in vector_data:
+            raise HTTPException(
+                status_code=500, detail="Similar item is missing image vector")
+
+        prefetch.append(
+            models.Prefetch(
+                query=vector_data["image"],
+                using="image",
+                filter=query_filter,
+                limit=prefetch_limit,
+            )
+        )
+        if "color" in vector_data:
+            prefetch.append(
+                models.Prefetch(
+                    query=vector_data["color"],
+                    using="color",
+                    filter=query_filter,
+                    limit=prefetch_limit,
+                )
+            )
 
     if has_query:
         assert data.query is not None
@@ -311,12 +287,12 @@ async def index() -> dict:
     return {"status": "ok", "message": "Steam Style Query API"}
 
 
-@get("/search", tags=["Items"])
-async def search_items(
+@get("/search", tags=["Items"], sync_to_thread=True)
+def search_items(
     search_query: str | None = Parameter(
         query="query", default=None, description="Search query text"),
     similar_to: int | None = Parameter(
-        default=None, description="Item ID to find similar items for"),
+        default=None, ge=0, description="Item ID to find similar items for"),
     color: list[str] | None = Parameter(
         default=None, description="Colors to filter by"),
     category: list[str] | None = Parameter(
@@ -377,13 +353,14 @@ async def search_items(
     prefetch = _build_prefetch(data, query_filter)
 
     if not prefetch:
-        raise ValueError("Failed to generate embeddings")
+        raise HTTPException(
+            status_code=503, detail="Failed to generate embeddings")
 
     return {"results": _query_items(data, query_filter, prefetch)}
 
 
-@get("/item/{app_id:int}/{item_name:str}", tags=["Items"])
-async def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
+@get("/item/{app_id:int}/{item_name:str}", tags=["Items"], sync_to_thread=True)
+def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
     try:
         results, _ = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -420,25 +397,20 @@ async def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
         return Redirect(f"/item/{item_id}")
 
 
-@get("/item/{item_id:int}", tags=["Items"])
-async def get_item_by_id(item_id: int) -> dict:
+@get("/item/{item_id:int}", tags=["Items"], sync_to_thread=True)
+def get_item_by_id(item_id: int) -> dict:
+    if item_id < 0:
+        raise HTTPException(status_code=404, detail="Item not found")
+
     try:
-        results, _ = qdrant_client.scroll(
+        results = qdrant_client.retrieve(
             collection_name=settings.COLLECTION_NAME,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="item.id",
-                        match=models.MatchValue(value=item_id)
-                    )
-                ]
-            ),
-            limit=1,
+            ids=[item_id],
             with_payload=True,
             with_vectors=False,
         )
     except Exception as e:
-        logger.exception("Scroll error")
+        logger.exception("Retrieve error")
         raise HTTPException(
             status_code=500, detail=f"Database error: {e!s}") from e
 
