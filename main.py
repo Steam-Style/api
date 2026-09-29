@@ -6,8 +6,8 @@ import uvicorn
 from litestar import Litestar, get
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import HTTPException
-from litestar.openapi import OpenAPIConfig
-from litestar.openapi.plugins import SwaggerRenderPlugin
+from litestar.openapi import OpenAPIConfig, ResponseSpec
+from litestar.openapi.spec import Contact, Tag
 from litestar.params import Parameter
 from litestar.response import Redirect
 from pydantic import BaseModel, Field
@@ -15,6 +15,8 @@ from qdrant_client import QdrantClient, models
 from steam_style_embeddings import ColorEmbedder, Embedding, SiglipEmbedder
 
 from config import settings
+from docs import SiteSwaggerRenderPlugin
+from schemas import Error, Item, ItemList, SearchResults
 
 BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent"]
 
@@ -296,32 +298,62 @@ async def index() -> dict:
     return {"status": "ok", "message": "Steam Style Query API"}
 
 
-@get("/search", tags=["Items"], sync_to_thread=True)
+@get(
+    "/search",
+    tags=["Search"],
+    sync_to_thread=True,
+    summary="Search items",
+    response_description="Matching items, best match first when searching",
+    description=(
+        "Browse the catalogue, or search it by text, colors or another item.\n\n"
+        "- Without `query`, `color` or `similar_to` you're browsing, and results come in the order set by `sort`.\n"
+        "- With any of them, results are ranked by how well they match. Using several at once, like a text search "
+        "with colors, combines the rankings.\n\n"
+        "The other filters work the same either way. Page through results with `limit` and `offset`."
+    ),
+    responses={
+        404: ResponseSpec(Error, description="The `similar_to` item doesn't exist"),
+        503: ResponseSpec(Error, description="Text search isn't available right now"),
+    },
+)
 def search_items(
     search_query: str | None = Parameter(
-        query="query", default=None, description="Search query text"),
+        query="query", default=None,
+        description="What you're looking for, like `rainy city at night`. Matches what items look like, not only their names"),
     similar_to: int | None = Parameter(
-        default=None, ge=0, description="Item ID to find similar items for"),
+        default=None, ge=0,
+        description="ID of an item to find lookalikes of. The item itself is left out"),
     app_id: int | None = Parameter(
-        default=None, ge=0, description="Only items from this app"),
+        default=None, ge=0, description="Only items from this Steam app"),
     color: list[str] | None = Parameter(
-        default=None, description="Colors to filter by"),
+        default=None,
+        description="Hex color to match, like `#1a9fff` or `1a9fff`. Repeat to match several colors"),
     category: list[str] | None = Parameter(
         default=None,
-        description="Filter by category. 'all'=all categories, empty=no items.",
+        description=(
+            "Only items from this category. Repeat for several. One of `avatars`, `avatar frames`, "
+            "`profile backgrounds`, `mini-profile backgrounds`, `game profiles`, `emoticons`, `animated stickers`, "
+            "`chat effects`, `steam deck keyboards` or `steam startup movies`. Leave it out or use `all` for "
+            "every category, an empty value returns nothing"
+        ),
     ),
-    limit: int = Parameter(default=10, ge=1, le=100),
+    limit: int = Parameter(default=10, ge=1, le=100, description="How many results to return"),
     offset: int = Parameter(
-        default=0, ge=0, description="Offset for pagination"),
+        default=0, ge=0, description="How many results to skip, for paging"),
     sort: str | None = Parameter(
-        default="newest", description="Sort by: 'newest', 'oldest', 'updated', 'random'"),
+        default="newest",
+        description=(
+            "Order when browsing: `newest`, `oldest`, `updated` or `random`. "
+            "Searches are always ordered by best match"
+        ),
+    ),
     animated: bool | None = Parameter(
-        default=None, description="True=only animated, False=exclude animated, None=all"),
+        default=None, description="`true` for only animated items, `false` to leave them out"),
     tiled: bool | None = Parameter(
-        default=None, description="True=only tiled, False=exclude tiled, None=all"),
+        default=None, description="`true` for only tiled backgrounds, `false` to leave them out"),
     transparent: bool | None = Parameter(
-        default=None, description="True=only transparent, False=exclude transparent, None=all"),
-) -> dict:
+        default=None, description="`true` for only items with transparent parts, `false` to leave them out"),
+) -> SearchResults:
     category_values = category if category is not None else ["all"]
     data = SearchRequest(
         query=search_query,
@@ -371,8 +403,19 @@ def search_items(
     return {"results": _query_items(data, query_filter, prefetch)}
 
 
-@get("/item/{app_id:int}/{item_name:str}", tags=["Items"], sync_to_thread=True)
-def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
+@get(
+    "/item/{app_id:int}/{item_name:str}",
+    tags=["Items"],
+    sync_to_thread=True,
+    summary="Find an item by name",
+    response_description="Redirects to the item",
+    description="Looks up an item by its app and exact name, then redirects to `/item/{item_id}`.",
+    responses={404: ResponseSpec(Error, description="No item with that name in the app")},
+)
+def get_item_by_name(
+    app_id: int = Parameter(description="Steam app ID the item comes from"),
+    item_name: str = Parameter(description="Exact item name, like `Dying Light 2 Stay Human Profile`"),
+) -> Item | Redirect:
     try:
         results, _ = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -409,8 +452,18 @@ def get_item_by_name(app_id: int, item_name: str) -> dict | Redirect:
         return Redirect(f"/item/{item_id}")
 
 
-@get("/item/{item_id:int}", tags=["Items"], sync_to_thread=True)
-def get_item_by_id(item_id: int) -> dict:
+@get(
+    "/item/{item_id:int}",
+    tags=["Items"],
+    sync_to_thread=True,
+    summary="Get an item",
+    response_description="The item",
+    description="Everything about one item, including its images, videos and Steam links.",
+    responses={404: ResponseSpec(Error, description="No item with that ID")},
+)
+def get_item_by_id(
+    item_id: int = Parameter(description="Item ID, the same as its ID in the Points Shop"),
+) -> Item:
     if item_id < 0:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -435,12 +488,17 @@ def get_item_by_id(item_id: int) -> dict:
     "/items",
     tags=["Items"],
     sync_to_thread=True,
-    description="Every item ID with when it was last updated, in ID order. Made for crawling the whole catalogue, like building a sitemap.",
+    summary="List every item",
+    response_description="A page of item IDs",
+    description=(
+        "Every item ID with when it last changed, in ID order. Made for going through the whole catalogue, "
+        "like building a sitemap. Use `/item/{item_id}` for the details."
+    ),
 )
 def list_items(
     page: int = Parameter(default=0, ge=0, description="Page to return, starting at 0"),
     limit: int = Parameter(default=1000, ge=1, le=50000, description="Items per page"),
-) -> dict:
+) -> ItemList:
     try:
         total = qdrant_client.count(
             collection_name=settings.COLLECTION_NAME, exact=True).count
@@ -486,10 +544,23 @@ cors_config = CORSConfig(
 app = Litestar(
     route_handlers=[index, search_items, list_items, get_item_by_id, get_item_by_name],
     openapi_config=OpenAPIConfig(
-        title="Steam Style",
+        title="Steam Style API",
         version="1.0.0",
+        description=(
+            "Search every item in the Steam Points Shop by what it looks like: avatars, frames, backgrounds, "
+            "emoticons, stickers and more. This is the API behind [steam.style](https://steam.style), and it's "
+            "free to use without a key.\n\n"
+            "Item IDs are the same as in the Points Shop, so an item's page on Steam is "
+            "`https://store.steampowered.com/points/shop/reward/{item_id}`.\n\n"
+            "Found a bug or missing something? Open an issue on [GitHub](https://github.com/Steam-Style/api)."
+        ),
+        contact=Contact(name="Steam Style", url="https://steam.style", email="info@steam.style"),
+        tags=[
+            Tag(name="Search", description="Find items by text, colors or looks, or browse the whole catalogue"),
+            Tag(name="Items", description="Get single items, or list every item there is"),
+        ],
         path="/docs",
-        render_plugins=[SwaggerRenderPlugin()],
+        render_plugins=[SiteSwaggerRenderPlugin()],
         root_schema_site="swagger"
     ),
     cors_config=cors_config
