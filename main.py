@@ -47,6 +47,7 @@ def get_text_embedding(text: str) -> Embedding | None:
 class SearchRequest(BaseModel):
     query: str | None = None
     similar_to: int | None = None
+    app_id: int | None = None
     colors: list[str] | None = None
     category: list[str] = Field(
         default_factory=list,
@@ -73,6 +74,14 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
             models.FieldCondition(
                 key="item.id",
                 match=models.MatchValue(value=data.similar_to),
+            )
+        )
+
+    if data.app_id is not None:
+        must_conditions.append(
+            models.FieldCondition(
+                key="app.id",
+                match=models.MatchValue(value=data.app_id),
             )
         )
 
@@ -293,6 +302,8 @@ def search_items(
         query="query", default=None, description="Search query text"),
     similar_to: int | None = Parameter(
         default=None, ge=0, description="Item ID to find similar items for"),
+    app_id: int | None = Parameter(
+        default=None, ge=0, description="Only items from this app"),
     color: list[str] | None = Parameter(
         default=None, description="Colors to filter by"),
     category: list[str] | None = Parameter(
@@ -315,6 +326,7 @@ def search_items(
     data = SearchRequest(
         query=search_query,
         similar_to=similar_to,
+        app_id=app_id,
         colors=color,
         category=category_values,
         limit=limit,
