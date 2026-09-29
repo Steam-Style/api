@@ -431,10 +431,60 @@ def get_item_by_id(item_id: int) -> dict:
 
     return cast(dict[str, Any], results[0].payload)
 
+@get(
+    "/items",
+    tags=["Items"],
+    sync_to_thread=True,
+    description="Every item ID with when it was last updated, in ID order. Made for crawling the whole catalogue, like building a sitemap.",
+)
+def list_items(
+    page: int = Parameter(default=0, ge=0, description="Page to return, starting at 0"),
+    limit: int = Parameter(default=1000, ge=1, le=50000, description="Items per page"),
+) -> dict:
+    try:
+        total = qdrant_client.count(
+            collection_name=settings.COLLECTION_NAME, exact=True).count
+        start = None
+
+        if page > 0:
+            _, start = qdrant_client.scroll(
+                collection_name=settings.COLLECTION_NAME,
+                limit=page * limit,
+                with_payload=False,
+                with_vectors=False,
+            )
+
+            if start is None:
+                return {"items": [], "total": total}
+
+        points, _ = qdrant_client.scroll(
+            collection_name=settings.COLLECTION_NAME,
+            offset=start,
+            limit=limit,
+            with_payload=["timestamps.updated_at"],
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.exception("Scroll error")
+        raise HTTPException(
+            status_code=500, detail=f"Database error: {e!s}") from e
+
+    return {
+        "items": [
+            {
+                "id": point.id,
+                "updated_at": (point.payload or {}).get("timestamps", {}).get("updated_at"),
+            }
+            for point in points
+        ],
+        "total": total,
+    }
+
+
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app = Litestar(
-    route_handlers=[index, search_items, get_item_by_id, get_item_by_name],
+    route_handlers=[index, search_items, list_items, get_item_by_id, get_item_by_name],
     openapi_config=OpenAPIConfig(
         title="Steam Style",
         version="1.0.0",
