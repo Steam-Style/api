@@ -208,6 +208,14 @@ class SearchResults(BaseModel):
     results: list[Item]
 
 
+class ItemBatch(BaseModel):
+    """
+    Several items, fetched by ID.
+    """
+
+    items: list[Item]
+
+
 class ItemSummary(BaseModel):
     """
     An item ID with when it last changed.
