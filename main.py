@@ -16,7 +16,7 @@ from steam_style_embeddings import ColorEmbedder, Embedding, SiglipEmbedder
 
 from config import settings
 from docs import SiteSwaggerRenderPlugin
-from schemas import Error, Item, ItemList, SearchResults
+from schemas import Error, Item, ItemBatch, ItemList, SearchResults
 
 BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent"]
 
@@ -484,6 +484,43 @@ def get_item_by_id(
 
     return cast(dict[str, Any], results[0].payload)
 
+
+@get(
+    "/items/batch",
+    tags=["Items"],
+    sync_to_thread=True,
+    summary="Get several items",
+    response_description="The items that exist, in the order they were asked for",
+    description=(
+        "Up to 50 items in one request, like everything used in a shared profile design. "
+        "IDs that don't exist are left out."
+    ),
+)
+def get_items_batch(
+    item_ids: list[int] = Parameter(
+        query="id", min_items=1, max_items=50, description="Item ID. Repeat for several, up to 50"),
+) -> ItemBatch:
+    wanted = list(dict.fromkeys(item_id for item_id in item_ids if item_id >= 0))
+
+    if not wanted:
+        return {"items": []}
+
+    try:
+        results = qdrant_client.retrieve(
+            collection_name=settings.COLLECTION_NAME,
+            ids=wanted,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.exception("Retrieve error")
+        raise HTTPException(
+            status_code=500, detail=f"Database error: {e!s}") from e
+
+    found = {int(point.id): point.payload for point in results}
+    return {"items": [found[item_id] for item_id in wanted if item_id in found]}
+
+
 @get(
     "/items",
     tags=["Items"],
@@ -542,7 +579,7 @@ def list_items(
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app = Litestar(
-    route_handlers=[index, search_items, list_items, get_item_by_id, get_item_by_name],
+    route_handlers=[index, search_items, list_items, get_items_batch, get_item_by_id, get_item_by_name],
     openapi_config=OpenAPIConfig(
         title="Steam Style API",
         version="1.0.0",
