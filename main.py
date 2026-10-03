@@ -1,4 +1,5 @@
 import logging
+from functools import cache
 from typing import Any, cast
 from urllib.parse import unquote_plus
 
@@ -16,9 +17,13 @@ from steam_style_embeddings import ColorEmbedder, Embedding, SiglipEmbedder
 
 from config import settings
 from docs import SiteSwaggerRenderPlugin
+from query_parsing import CATEGORIES, AppIndex, ParsedQuery, parse_query
 from schemas import Error, Item, ItemBatch, ItemList, SearchResults
 
 BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent", "sold_separately"]
+BOOST_RANK_CONSTANT = 10
+KIND_BOOST = 2.0
+APP_BOOST = 3.0
 
 logger = logging.getLogger(__name__)
 color_embedder = ColorEmbedder(
@@ -33,6 +38,22 @@ color_embedder = ColorEmbedder(
 siglip_embedder = SiglipEmbedder(
     model_name=settings.MODEL_NAME, device=settings.DEVICE, load_vision=False)
 qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
+app_index = AppIndex(qdrant_client, settings.COLLECTION_NAME)
+
+
+@cache
+def has_frames_vector() -> bool:
+    """
+    Checks once whether the collection stores the frames of animated items, so text searches can match any frame.
+    Collections from before frames were added only have one image vector per item.
+    """
+    try:
+        vectors = qdrant_client.get_collection(collection_name=settings.COLLECTION_NAME).config.params.vectors
+    except Exception:
+        logger.exception("Could not read the collection config")
+        return False
+
+    return isinstance(vectors, dict) and "frames" in vectors
 
 
 def get_text_embedding(text: str) -> Embedding | None:
@@ -255,10 +276,11 @@ def _build_prefetch(
         assert data.query is not None
         text_emb = get_text_embedding(data.query)
         if text_emb:
+            frames = has_frames_vector()
             prefetch.append(
                 models.Prefetch(
-                    query=text_emb,
-                    using="image",
+                    query=[text_emb] if frames else text_emb,
+                    using="frames" if frames else "image",
                     filter=query_filter,
                     limit=prefetch_limit,
                 )
@@ -267,17 +289,77 @@ def _build_prefetch(
     return prefetch
 
 
+def _boost_conditions(
+    parsed: ParsedQuery,
+    data: SearchRequest,
+    requested_categories: list[str],
+) -> list[tuple[models.Condition, float]]:
+    """
+    Turns what a query said about the kind of item into conditions for items to rank higher, with how much higher.
+    Anything the filters already decide is left out.
+    """
+    is_animated = models.FieldCondition(key="item.animated", match=models.MatchValue(value=True))
+    boosts: list[tuple[models.Condition, float]] = []
+
+    if parsed.animated is True and data.animated is None:
+        boosts.append((is_animated, KIND_BOOST))
+    if parsed.animated is False and data.animated is None:
+        boosts.append((models.Filter(must_not=[is_animated]), KIND_BOOST))
+
+    for prop in ("tiled", "transparent"):
+        if getattr(parsed, prop) and getattr(data, prop) is None:
+            boosts.append((models.FieldCondition(key=f"item.{prop}", match=models.MatchValue(value=True)), KIND_BOOST))
+
+    if parsed.categories and ("all" in requested_categories or not set(requested_categories) <= set(parsed.categories)):
+        boosts.append((
+            models.FieldCondition(key="item.category", match=models.MatchAny(any=parsed.categories)),
+            KIND_BOOST,
+        ))
+
+    if parsed.apps:
+        boosts.append((
+            models.FieldCondition(key="app.id", match=models.MatchAny(any=[app_id for app_id, _ in parsed.apps])),
+            APP_BOOST,
+        ))
+
+    return boosts
+
+
 def _query_items(
     data: SearchRequest,
     query_filter: models.Filter,
     prefetch: list[models.Prefetch],
+    boosts: list[tuple[models.Condition, float]],
 ) -> list[dict[str, Any]]:
+    """
+    Ranks items by the prefetched searches. Each boost repeats the main search among the items that match it, so
+    matching items rank in two lists and come out higher without the others being left out.
+    """
+    if boosts:
+        main = next((p for p in reversed(prefetch) if p.using != "color"), prefetch[0])
+        boosted = [
+            models.Prefetch(
+                query=main.query,
+                using=main.using,
+                filter=models.Filter(must=[query_filter, condition]),
+                limit=main.limit,
+            )
+            for condition, _ in boosts
+        ]
+        fusion: models.RrfQuery | models.FusionQuery = models.RrfQuery(rrf=models.Rrf(
+            k=BOOST_RANK_CONSTANT,
+            weights=[1.0] * len(prefetch) + [weight for _, weight in boosts],
+        ))
+        prefetch = prefetch + boosted
+    else:
+        fusion = models.FusionQuery(fusion=models.Fusion.RRF)
+
     if len(prefetch) > 1:
         try:
             results = qdrant_client.query_points(
                 collection_name=settings.COLLECTION_NAME,
                 prefetch=prefetch,
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                query=fusion,
                 limit=data.limit,
                 offset=data.offset,
                 with_payload=True,
@@ -375,8 +457,47 @@ def search_items(
     include_unavailable: bool = Parameter(
         default=False,
         description="`true` to also return items the Points Shop no longer sells, which are left out by default"),
+    parse: bool = Parameter(
+        default=True,
+        description=(
+            "Words in `query` like `animated`, `static`, `background` or a game's name rank matching items higher, "
+            "and the response says what was understood. When the query is only such words, like `animated "
+            "background`, they filter instead. `false` searches for the exact words"
+        ),
+    ),
 ) -> SearchResults:
+    understood = None
+    parsed = None
     category_values = category if category is not None else ["all"]
+    requested_categories = [
+        unquote_plus(value).lower().strip() for value in category_values if value and value.strip()
+    ]
+
+    if parse and search_query and search_query.strip():
+        allowed = CATEGORIES if "all" in requested_categories else requested_categories
+        parsed = parse_query(search_query, allowed, app_index if app_id is None else None)
+
+        if parsed.found:
+            search_query = parsed.text or None
+            understood = {
+                "query": parsed.text or None,
+                "animated": parsed.animated,
+                "tiled": parsed.tiled,
+                "transparent": parsed.transparent,
+                "categories": parsed.categories,
+                "apps": [{"id": found_id, "name": name} for found_id, name in parsed.apps],
+            }
+
+            if not search_query and not color and similar_to is None:
+                animated = parsed.animated if animated is None else animated
+                tiled = parsed.tiled if tiled is None else tiled
+                transparent = parsed.transparent if transparent is None else transparent
+                if parsed.categories:
+                    category_values = parsed.categories
+                parsed = None
+        else:
+            parsed = None
+
     data = SearchRequest(
         query=search_query,
         similar_to=similar_to,
@@ -400,7 +521,7 @@ def search_items(
     ]
 
     if category is not None and not normalized_categories:
-        return {"results": []}
+        return {"results": [], "understood": understood}
 
     has_query = data.query is not None and len(data.query.strip()) > 0
     has_similar = data.similar_to is not None
@@ -415,7 +536,8 @@ def search_items(
                 limit=data.limit,
                 offset=data.offset,
                 sort=data.sort,
-            )
+            ),
+            "understood": understood,
         }
 
     prefetch = _build_prefetch(data, query_filter)
@@ -424,7 +546,9 @@ def search_items(
         raise HTTPException(
             status_code=503, detail="Failed to generate embeddings")
 
-    return {"results": _query_items(data, query_filter, prefetch)}
+    boosts = _boost_conditions(parsed, data, requested_categories) if parsed else []
+
+    return {"results": _query_items(data, query_filter, prefetch, boosts), "understood": understood}
 
 
 @get(
@@ -614,7 +738,8 @@ app = Litestar(
         render_plugins=[SiteSwaggerRenderPlugin()],
         root_schema_site="swagger"
     ),
-    cors_config=cors_config
+    cors_config=cors_config,
+    on_startup=[app_index.refresh_in_background],
 )
 
 

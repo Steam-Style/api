@@ -12,6 +12,7 @@ dependencies = [
     "qdrant-client>=1.19.1",
     "pydantic-settings>=2.13.1",
     "torch>=2.13.0",
+    "httpx>=0.28.1",
 ]
 
 [tool.uv.sources]
