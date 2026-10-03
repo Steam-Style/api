@@ -18,7 +18,7 @@ from config import settings
 from docs import SiteSwaggerRenderPlugin
 from schemas import Error, Item, ItemBatch, ItemList, SearchResults
 
-BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent"]
+BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent", "sold_separately"]
 
 logger = logging.getLogger(__name__)
 color_embedder = ColorEmbedder(
@@ -65,6 +65,10 @@ class SearchRequest(BaseModel):
         default=None, description="True=only tiled, False=exclude tiled, None=all")
     transparent: bool | None = Field(
         default=None, description="True=only transparent, False=exclude transparent, None=all")
+    sold_separately: bool | None = Field(
+        default=None, description="True=only items sold on their own, False=only items that aren't, None=all")
+    include_unavailable: bool = Field(
+        default=False, description="True=also items the Points Shop no longer sells")
 
 
 def _build_query_filter(data: SearchRequest) -> models.Filter:
@@ -121,6 +125,14 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
                     match=models.MatchValue(value=True),
                 )
             )
+
+    if not data.include_unavailable:
+        must_not_conditions.append(
+            models.FieldCondition(
+                key="item.available",
+                match=models.MatchValue(value=False),
+            )
+        )
 
     return models.Filter(
         must=must_conditions if must_conditions else None,
@@ -353,6 +365,16 @@ def search_items(
         default=None, description="`true` for only tiled backgrounds, `false` to leave them out"),
     transparent: bool | None = Parameter(
         default=None, description="`true` for only items with transparent parts, `false` to leave them out"),
+    sold_separately: bool | None = Parameter(
+        default=None,
+        description=(
+            "`true` for only items you can buy on their own, `false` for only items that come with a game profile "
+            "or aren't sold to everyone"
+        ),
+    ),
+    include_unavailable: bool = Parameter(
+        default=False,
+        description="`true` to also return items the Points Shop no longer sells, which are left out by default"),
 ) -> SearchResults:
     category_values = category if category is not None else ["all"]
     data = SearchRequest(
@@ -366,7 +388,9 @@ def search_items(
         sort=sort,
         animated=animated,
         tiled=tiled,
-        transparent=transparent
+        transparent=transparent,
+        sold_separately=sold_separately,
+        include_unavailable=include_unavailable,
     )
 
     normalized_categories = [
@@ -529,32 +553,21 @@ def get_items_batch(
     response_description="A page of item IDs",
     description=(
         "Every item ID with when it last changed, in ID order. Made for going through the whole catalogue, "
-        "like building a sitemap. Use `/item/{item_id}` for the details."
+        "like building a sitemap. Start without a cursor, then pass the `next_cursor` of each page to get the next "
+        "one, until it's null. Use `/item/{item_id}` for the details."
     ),
 )
 def list_items(
-    page: int = Parameter(default=0, ge=0, description="Page to return, starting at 0"),
+    cursor: int | None = Parameter(
+        default=None, ge=0, description="Where to continue from, the `next_cursor` of the previous page"),
     limit: int = Parameter(default=1000, ge=1, le=50000, description="Items per page"),
 ) -> ItemList:
     try:
         total = qdrant_client.count(
             collection_name=settings.COLLECTION_NAME, exact=True).count
-        start = None
-
-        if page > 0:
-            _, start = qdrant_client.scroll(
-                collection_name=settings.COLLECTION_NAME,
-                limit=page * limit,
-                with_payload=False,
-                with_vectors=False,
-            )
-
-            if start is None:
-                return {"items": [], "total": total}
-
-        points, _ = qdrant_client.scroll(
+        points, next_cursor = qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
-            offset=start,
+            offset=cursor,
             limit=limit,
             with_payload=["timestamps.updated_at"],
             with_vectors=False,
@@ -573,6 +586,7 @@ def list_items(
             for point in points
         ],
         "total": total,
+        "next_cursor": next_cursor,
     }
 
 
