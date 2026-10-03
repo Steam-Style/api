@@ -215,12 +215,42 @@ class Item(BaseModel):
     )
 
 
+class UnderstoodApp(BaseModel):
+    """
+    A game named in the query.
+    """
+
+    id: int = Field(description="Steam app ID", examples=[1145360])
+    name: str = Field(description="App name", examples=["Hades"])
+
+
+class Understood(BaseModel):
+    """
+    What the words of a query said about the kind of item. Items that match it rank higher, or only they are returned
+    when the query had nothing else to search for.
+    """
+
+    query: str | None = Field(
+        description="What the items should look like, with game names written out, null if nothing",
+        examples=["hades cat"],
+    )
+    animated: bool | None = Field(description="`animated` or `static` in the query", examples=[True])
+    tiled: bool | None = Field(description="`tiled` in the query", examples=[None])
+    transparent: bool | None = Field(description="`transparent` in the query", examples=[None])
+    categories: list[str] = Field(description="Categories named in the query", examples=[["profile backgrounds"]])
+    apps: list[UnderstoodApp] = Field(description="Games named in the query")
+
+
 class SearchResults(BaseModel):
     """
     A page of search results.
     """
 
     results: list[Item]
+    understood: Understood | None = Field(
+        default=None,
+        description="What the words of the query said about the kind of item, null when the query was searched as it is",
+    )
 
 
 class ItemBatch(BaseModel):
