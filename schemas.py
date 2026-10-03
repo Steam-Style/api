@@ -83,6 +83,19 @@ class ItemDetails(BaseModel):
     animated: bool = Field(description="Whether the item moves", examples=[False])
     transparent: bool = Field(description="Whether the image has transparent parts", examples=[False])
     tiled: bool = Field(description="Whether the background repeats as a pattern", examples=[False])
+    available: bool = Field(
+        default=True,
+        description="Whether the Points Shop still sells the item. Items it stopped selling stay in the catalogue",
+        examples=[True],
+    )
+    sold_separately: bool = Field(
+        default=True,
+        description=(
+            "Whether the item can be bought on its own. False for the parts of a game profile and for items the "
+            "Points Shop only sells to some people, like the Steam Deck profile"
+        ),
+        examples=[True],
+    )
     assets: Assets
 
 
@@ -148,6 +161,8 @@ class Timestamps(BaseModel):
     available_at: str | None = Field(description="When the item goes on sale, if it's limited", examples=[None])
     unavailable_at: str | None = Field(description="When the item stops being sold, if it's limited", examples=[None])
     usable_duration_seconds: int = Field(description="How long the item lasts after buying it, 0 for forever", examples=[0])
+    removed_at: str | None = Field(
+        default=None, description="When the item was found to be gone from the Points Shop", examples=[None])
 
 
 class ProfilePart(Assets):
@@ -232,6 +247,8 @@ class ItemList(BaseModel):
 
     items: list[ItemSummary]
     total: int = Field(description="How many items there are in total", examples=[157000])
+    next_cursor: int | None = Field(
+        description="Pass as `cursor` to get the next page, null on the last page", examples=[198097])
 
 
 class Error(BaseModel):
