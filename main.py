@@ -1,10 +1,13 @@
 import logging
-from functools import cache
-from typing import Any, cast
+import threading
+import time
+from collections.abc import Hashable
+from functools import lru_cache
+from typing import Any, NamedTuple, cast
 from urllib.parse import unquote_plus
 
 import uvicorn
-from litestar import Litestar, get
+from litestar import Litestar, get, post
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import HTTPException
 from litestar.openapi import OpenAPIConfig, ResponseSpec
@@ -17,13 +20,38 @@ from steam_style_embeddings import ColorEmbedder, Embedding, SiglipEmbedder
 
 from config import settings
 from docs import SiteSwaggerRenderPlugin
-from query_parsing import CATEGORIES, AppIndex, ParsedQuery, parse_query
-from schemas import Error, Item, ItemBatch, ItemList, SearchResults
+from generator import CATEGORIES as PART_CATEGORIES
+from generator import PARTS, GenerationError, Generator, neutral_colors, tone_words
+from generator import Request as GenerationRequest
+from owners import OwnedGames, OwnedGamesError, unowned
+from query_parsing import CATEGORIES, AppIndex, ParsedQuery, colors_named, parse_query
+from schemas import (
+    Error,
+    GenerateRequest,
+    GenerateResults,
+    Item,
+    ItemBatch,
+    ItemList,
+    SearchResults,
+)
 
 BOOLEAN_FILTER_FIELDS = ["animated", "tiled", "transparent", "sold_separately"]
 BOOST_RANK_CONSTANT = 10
 KIND_BOOST = 2.0
 APP_BOOST = 3.0
+NAME_PHRASE_BOOST = 3.0
+NAME_WORD_BOOST = 1.5
+COLLECTION_CHECK_SECONDS = 600
+GENERATION_SLOTS = 2
+GENERATION_WAIT_SECONDS = 15
+STEAMID_MIN = 76561197960265729
+STEAMID_MAX = 76561202255233023
+TEXT_CACHE_SIZE = 1024
+SEARCH_CACHE_SECONDS = 300
+SEARCH_CACHE_SIZE = 500
+MAX_QUERY_LENGTH = 200
+MAX_SEARCH_COLORS = 10
+MAX_OFFSET = 10_000
 
 logger = logging.getLogger(__name__)
 color_embedder = ColorEmbedder(
@@ -39,32 +67,120 @@ siglip_embedder = SiglipEmbedder(
     model_name=settings.MODEL_NAME, device=settings.DEVICE, load_vision=False)
 qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
 app_index = AppIndex(qdrant_client, settings.COLLECTION_NAME)
+owned_games = OwnedGames(settings.STEAM_API_KEY)
+generator = Generator(
+    qdrant_client,
+    settings.COLLECTION_NAME,
+    reviews=lambda: app_index.reviews,
+    titles=lambda: collection_features().titles,
+    frames=lambda: collection_features().frames,
+)
+generation_slots = threading.BoundedSemaphore(GENERATION_SLOTS)
 
 
-@cache
-def has_frames_vector() -> bool:
+class CollectionFeatures(NamedTuple):
+    frames: bool
+    titles: bool
+    prices: bool
+
+
+_collection_features: tuple[float, CollectionFeatures] | None = None
+
+
+def collection_features() -> CollectionFeatures:
     """
-    Checks once whether the collection stores the frames of animated items, so text searches can match any frame.
-    Collections from before frames were added only have one image vector per item.
+    Whether the collection stores the frames of animated items, so text searches can match any frame, has a word index
+    on item titles, so items named like the search rank higher, and has prices as numbers to filter by. Collections
+    made before those were added have none of them. It's read again every few minutes, so they're picked up without a
+    restart.
     """
+    global _collection_features
+    now = time.monotonic()
+    if _collection_features and now - _collection_features[0] < COLLECTION_CHECK_SECONDS:
+        return _collection_features[1]
+
     try:
-        vectors = qdrant_client.get_collection(collection_name=settings.COLLECTION_NAME).config.params.vectors
+        info = qdrant_client.get_collection(collection_name=settings.COLLECTION_NAME)
     except Exception:
         logger.exception("Could not read the collection config")
-        return False
+        return CollectionFeatures(frames=False, titles=False, prices=False)
 
-    return isinstance(vectors, dict) and "frames" in vectors
+    vectors = info.config.params.vectors
+    schema = info.payload_schema or {}
+    title = schema.get("item.title")
+    features = CollectionFeatures(
+        frames=isinstance(vectors, dict) and "frames" in vectors,
+        titles=title is not None and title.data_type == models.PayloadSchemaType.TEXT,
+        prices=getattr(schema.get("item.point_cost"), "data_type", None) == models.PayloadSchemaType.INTEGER,
+    )
+    _collection_features = (now, features)
+    return features
+
+
+@lru_cache(maxsize=TEXT_CACHE_SIZE)
+def _text_embedding(text: str) -> tuple[float, ...]:
+    """Embeds a search, kept for the next page of results or the next person searching the same. Failures aren't kept"""
+    embedding = siglip_embedder.get_text_embedding(text)
+    if embedding is None:
+        raise ValueError("The model returned no embedding")
+    return tuple(embedding)
 
 
 def get_text_embedding(text: str) -> Embedding | None:
+    """
+    The embedding of a search. SigLIP 2 was trained on lowercase text, and capitals make it far worse at finding
+    things by name, so the text is lowercased first.
+    """
     if not siglip_embedder.is_ready():
         return None
 
     try:
-        return siglip_embedder.get_text_embedding(text)
+        return list(_text_embedding(text.lower()))
     except Exception as e:
         logger.error("Error getting text embedding: %s", e)
         return None
+
+
+class SearchCache:
+    """
+    Search responses from the last few minutes. Paging back and forth, the same search again and crawlers opening item
+    pages, which each ask for similar items, then don't search again. The catalogue only changes once an hour anyway.
+    """
+
+    def __init__(self, seconds: float, size: int) -> None:
+        self.seconds = seconds
+        self.size = size
+        self.found: dict[Hashable, tuple[float, dict[str, Any]]] = {}
+        self.lock = threading.Lock()
+
+    def get(self, key: Hashable) -> dict[str, Any] | None:
+        with self.lock:
+            kept = self.found.get(key)
+            if kept is None or time.monotonic() - kept[0] >= self.seconds:
+                self.found.pop(key, None)
+                return None
+            return kept[1]
+
+    def put(self, key: Hashable, response: dict[str, Any]) -> None:
+        with self.lock:
+            self.found.pop(key, None)
+            self.found[key] = (time.monotonic(), response)
+            while len(self.found) > self.size:
+                self.found.pop(next(iter(self.found)))
+
+
+search_cache = SearchCache(SEARCH_CACHE_SECONDS, SEARCH_CACHE_SIZE)
+
+
+def owned_apps(owner: int) -> frozenset[int] | None:
+    """The games a Steam account owns, None when its game details are private"""
+    if not owned_games.ready:
+        raise HTTPException(status_code=503, detail="Checking which games an account owns isn't set up on this server")
+    try:
+        return owned_games.get(owner)
+    except OwnedGamesError as e:
+        logger.warning("Could not get owned games: %s", e)
+        raise HTTPException(status_code=502, detail="Couldn't get the account's games from Steam, try again in a bit") from e
 
 
 class SearchRequest(BaseModel):
@@ -90,6 +206,9 @@ class SearchRequest(BaseModel):
         default=None, description="True=only items sold on their own, False=only items that aren't, None=all")
     include_unavailable: bool = Field(
         default=False, description="True=also items the Points Shop no longer sells")
+    owned: list[int] | None = Field(
+        default=None, description="The games an account owns, for only items it can buy. None=everything")
+    max_points: int | None = Field(default=None, description="Only items that cost at most this many points")
 
 
 def _build_query_filter(data: SearchRequest) -> models.Filter:
@@ -153,6 +272,14 @@ def _build_query_filter(data: SearchRequest) -> models.Filter:
                 key="item.available",
                 match=models.MatchValue(value=False),
             )
+        )
+
+    if data.owned is not None:
+        must_not_conditions.append(unowned(frozenset(data.owned)))
+
+    if data.max_points is not None:
+        must_conditions.append(
+            models.FieldCondition(key="item.point_cost", range=models.Range(lte=data.max_points))
         )
 
     return models.Filter(
@@ -232,7 +359,7 @@ def _build_prefetch(
             similar_points = qdrant_client.retrieve(
                 collection_name=settings.COLLECTION_NAME,
                 ids=[data.similar_to],
-                with_vectors=True,
+                with_vectors=["image", "color"],
                 with_payload=False,
             )
         except Exception as e:
@@ -276,7 +403,7 @@ def _build_prefetch(
         assert data.query is not None
         text_emb = get_text_embedding(data.query)
         if text_emb:
-            frames = has_frames_vector()
+            frames = collection_features().frames
             prefetch.append(
                 models.Prefetch(
                     query=[text_emb] if frames else text_emb,
@@ -296,7 +423,8 @@ def _boost_conditions(
 ) -> list[tuple[models.Condition, float]]:
     """
     Turns what a query said about the kind of item into conditions for items to rank higher, with how much higher.
-    Anything the filters already decide is left out.
+    Anything the filters already decide is left out. Items named like what's left of the query rank higher too, most
+    when the name has the words in the same order, which is how well-known items are found by name.
     """
     is_animated = models.FieldCondition(key="item.animated", match=models.MatchValue(value=True))
     boosts: list[tuple[models.Condition, float]] = []
@@ -321,6 +449,16 @@ def _boost_conditions(
             models.FieldCondition(key="app.id", match=models.MatchAny(any=[app_id for app_id, _ in parsed.apps])),
             APP_BOOST,
         ))
+
+    words = (data.query or "").split()
+    if words and collection_features().titles:
+        title = "item.title"
+        boosts.append((
+            models.FieldCondition(key=title, match=models.MatchPhrase(phrase=data.query or "")),
+            NAME_PHRASE_BOOST if len(words) > 1 else NAME_WORD_BOOST,
+        ))
+        if len(words) > 1:
+            boosts.append((models.FieldCondition(key=title, match=models.MatchText(text=data.query or "")), NAME_WORD_BOOST))
 
     return boosts
 
@@ -392,83 +530,32 @@ async def index() -> dict:
     return {"status": "ok", "message": "Steam Style Query API"}
 
 
-@get(
-    "/search",
-    tags=["Search"],
-    sync_to_thread=True,
-    summary="Search items",
-    response_description="Matching items, best match first when searching",
-    description=(
-        "Browse the catalogue, or search it by text, colors or another item.\n\n"
-        "- Without `query`, `color` or `similar_to` you're browsing, and results come in the order set by `sort`.\n"
-        "- With any of them, results are ranked by how well they match. Using several at once, like a text search "
-        "with colors, combines the rankings.\n\n"
-        "The other filters work the same either way. Page through results with `limit` and `offset`."
-    ),
-    responses={
-        404: ResponseSpec(Error, description="The `similar_to` item doesn't exist"),
-        503: ResponseSpec(Error, description="Text search isn't available right now"),
-    },
-)
-def search_items(
-    search_query: str | None = Parameter(
-        query="query", default=None,
-        description="What you're looking for, like `rainy city at night`. Matches what items look like, not only their names"),
-    similar_to: int | None = Parameter(
-        default=None, ge=0,
-        description="ID of an item to find lookalikes of. The item itself is left out"),
-    app_id: int | None = Parameter(
-        default=None, ge=0, description="Only items from this Steam app"),
-    color: list[str] | None = Parameter(
-        default=None,
-        description="Hex color to match, like `#1a9fff` or `1a9fff`. Repeat to match several colors"),
-    category: list[str] | None = Parameter(
-        default=None,
-        description=(
-            "Only items from this category. Repeat for several. One of `avatars`, `avatar frames`, "
-            "`profile backgrounds`, `mini-profile backgrounds`, `game profiles`, `emoticons`, `animated stickers`, "
-            "`chat effects`, `steam deck keyboards` or `steam startup movies`. Leave it out or use `all` for "
-            "every category, an empty value returns nothing"
-        ),
-    ),
-    limit: int = Parameter(default=10, ge=1, le=100, description="How many results to return"),
-    offset: int = Parameter(
-        default=0, ge=0, description="How many results to skip, for paging"),
-    sort: str | None = Parameter(
-        default="newest",
-        description=(
-            "Order when browsing: `newest`, `oldest`, `updated` or `random`. "
-            "Searches are always ordered by best match"
-        ),
-    ),
-    animated: bool | None = Parameter(
-        default=None, description="`true` for only animated items, `false` to leave them out"),
-    tiled: bool | None = Parameter(
-        default=None, description="`true` for only tiled backgrounds, `false` to leave them out"),
-    transparent: bool | None = Parameter(
-        default=None, description="`true` for only items with transparent parts, `false` to leave them out"),
-    sold_separately: bool | None = Parameter(
-        default=None,
-        description=(
-            "`true` for only items you can buy on their own, `false` for only items that come with a game profile "
-            "or aren't sold to everyone"
-        ),
-    ),
-    include_unavailable: bool = Parameter(
-        default=False,
-        description="`true` to also return items the Points Shop no longer sells, which are left out by default"),
-    parse: bool = Parameter(
-        default=True,
-        description=(
-            "Words in `query` like `animated`, `static`, `background` or a game's name rank matching items higher, "
-            "and the response says what was understood. When the query is only such words, like `animated "
-            "background`, they filter instead. `false` searches for the exact words"
-        ),
-    ),
-) -> SearchResults:
+def _search(
+    search_query: str | None,
+    similar_to: int | None,
+    app_id: int | None,
+    color: list[str] | None,
+    category: list[str] | None,
+    limit: int,
+    offset: int,
+    sort: str | None,
+    animated: bool | None,
+    tiled: bool | None,
+    transparent: bool | None,
+    sold_separately: bool | None,
+    include_unavailable: bool,
+    max_points: int | None,
+    owner: int | None,
+    parse: bool,
+) -> dict[str, Any]:
+    """Searches the catalogue, see search_items"""
     understood = None
     parsed = None
     category_values = category if category is not None else ["all"]
+    if max_points is not None and not collection_features().prices:
+        raise HTTPException(status_code=503, detail="Filtering by price isn't available yet")
+    owned = owned_apps(owner) if owner is not None else None
+    owned_games_count = len(owned) if owned is not None else None
     requested_categories = [
         unquote_plus(value).lower().strip() for value in category_values if value and value.strip()
     ]
@@ -495,8 +582,6 @@ def search_items(
                 if parsed.categories:
                     category_values = parsed.categories
                 parsed = None
-        else:
-            parsed = None
 
     data = SearchRequest(
         query=search_query,
@@ -512,6 +597,8 @@ def search_items(
         transparent=transparent,
         sold_separately=sold_separately,
         include_unavailable=include_unavailable,
+        owned=sorted(owned or ()) if owner is not None else None,
+        max_points=max_points,
     )
 
     normalized_categories = [
@@ -521,7 +608,7 @@ def search_items(
     ]
 
     if category is not None and not normalized_categories:
-        return {"results": [], "understood": understood}
+        return {"results": [], "understood": understood, "owned_games": owned_games_count}
 
     has_query = data.query is not None and len(data.query.strip()) > 0
     has_similar = data.similar_to is not None
@@ -538,6 +625,7 @@ def search_items(
                 sort=data.sort,
             ),
             "understood": understood,
+            "owned_games": owned_games_count,
         }
 
     prefetch = _build_prefetch(data, query_filter)
@@ -548,7 +636,219 @@ def search_items(
 
     boosts = _boost_conditions(parsed, data, requested_categories) if parsed else []
 
-    return {"results": _query_items(data, query_filter, prefetch, boosts), "understood": understood}
+    return {
+        "results": _query_items(data, query_filter, prefetch, boosts),
+        "understood": understood,
+        "owned_games": owned_games_count,
+    }
+
+
+
+@get(
+    "/search",
+    tags=["Search"],
+    sync_to_thread=True,
+    summary="Search items",
+    response_description="Matching items, best match first when searching",
+    description=(
+        "Browse the catalogue, or search it by text, colors or another item.\n\n"
+        "- Without `query`, `color` or `similar_to` you're browsing, and results come in the order set by `sort`.\n"
+        "- With any of them, results are ranked by how well they match. Using several at once, like a text search "
+        "with colors, combines the rankings.\n\n"
+        "The other filters work the same either way. Page through results with `limit` and `offset`."
+    ),
+    responses={
+        404: ResponseSpec(Error, description="The `similar_to` item doesn't exist"),
+        503: ResponseSpec(Error, description="Text search isn't available right now"),
+    },
+)
+def search_items(
+    search_query: str | None = Parameter(
+        query="query", default=None, max_length=MAX_QUERY_LENGTH,
+        description="What you're looking for, like `rainy city at night`. Matches what items look like, not only their names"),
+    similar_to: int | None = Parameter(
+        default=None, ge=0,
+        description="ID of an item to find lookalikes of. The item itself is left out"),
+    app_id: int | None = Parameter(
+        default=None, ge=0, description="Only items from this Steam app"),
+    color: list[str] | None = Parameter(
+        default=None, max_items=MAX_SEARCH_COLORS,
+        description="Hex color to match, like `#1a9fff` or `1a9fff`. Repeat to match several colors, up to 10"),
+    category: list[str] | None = Parameter(
+        default=None,
+        description=(
+            "Only items from this category. Repeat for several. One of `avatars`, `avatar frames`, "
+            "`profile backgrounds`, `mini-profile backgrounds`, `game profiles`, `emoticons`, `animated stickers`, "
+            "`chat effects`, `steam deck keyboards` or `steam startup movies`. Leave it out or use `all` for "
+            "every category, an empty value returns nothing"
+        ),
+    ),
+    limit: int = Parameter(default=10, ge=1, le=100, description="How many results to return"),
+    offset: int = Parameter(
+        default=0, ge=0, le=MAX_OFFSET, description="How many results to skip, for paging, up to 10,000"),
+    sort: str | None = Parameter(
+        default="newest",
+        description=(
+            "Order when browsing: `newest`, `oldest`, `updated` or `random`. "
+            "Searches are always ordered by best match"
+        ),
+    ),
+    animated: bool | None = Parameter(
+        default=None, description="`true` for only animated items, `false` to leave them out"),
+    tiled: bool | None = Parameter(
+        default=None, description="`true` for only tiled backgrounds, `false` to leave them out"),
+    transparent: bool | None = Parameter(
+        default=None, description="`true` for only items with transparent parts, `false` to leave them out"),
+    sold_separately: bool | None = Parameter(
+        default=None,
+        description=(
+            "`true` for only items you can buy on their own, `false` for only items that come with a game profile "
+            "or aren't sold to everyone"
+        ),
+    ),
+    include_unavailable: bool = Parameter(
+        default=False,
+        description="`true` to also return items the Points Shop no longer sells, which are left out by default"),
+    max_points: int | None = Parameter(
+        default=None, ge=0, description="Only items that cost at most this many points, `0` for free items"),
+    owner: int | None = Parameter(
+        default=None, ge=STEAMID_MIN, le=STEAMID_MAX,
+        description=(
+            "SteamID64 of an account, for only items it can buy. Steam sells a game's static backgrounds and "
+            "emoticons only to people who own the game. The account's game details have to be public, when they're "
+            "private every such item is left out"
+        ),
+    ),
+    parse: bool = Parameter(
+        default=True,
+        description=(
+            "Words in `query` like `animated`, `static`, `background` or a game's name rank matching items higher, "
+            "and the response says what was understood. When the query is only such words, like `animated "
+            "background`, they filter instead. `false` searches for the exact words"
+        ),
+    ),
+) -> SearchResults:
+    key = (
+        search_query, similar_to, app_id, tuple(color or ()), tuple(category) if category is not None else None,
+        limit, offset, sort, animated, tiled, transparent, sold_separately, include_unavailable, max_points, owner, parse,
+    )
+    cacheable = sort != "random"
+    cached = search_cache.get(key) if cacheable else None
+    if cached is not None:
+        return cached
+
+    response = _search(
+        search_query, similar_to, app_id, color, category, limit, offset, sort, animated, tiled, transparent,
+        sold_separately, include_unavailable, max_points, owner, parse,
+    )
+    if cacheable:
+        search_cache.put(key, response)
+    return response
+
+
+@post(
+    "/generate",
+    tags=["Generate"],
+    sync_to_thread=True,
+    status_code=200,
+    summary="Generate profiles",
+    response_description="Profiles that fit the request, best first",
+    description=(
+        "Puts whole profiles together: a background, mini-profile, animated avatar and avatar frame that fit what you "
+        "ask for and each other, plus a theme that suits the background, either a free one or a game profile's.\n\n"
+        "Start from a prompt, colors, items to keep or a game, or several of them at once. The options come back with "
+        "different backgrounds. Pass the items you've already seen as `exclude` to get new ones.\n\n"
+        "When no frame fits well enough, the option has none. When no avatar does, `avatar_from_background` is true: "
+        "the avatar is cut from the background behind it and uploaded as a custom one.\n\n"
+        "To keep a game profile, pass it as `game_profile` and leave the parts it brings out of `parts`. Its theme is "
+        "used, and when its background stays, the options have no background and match the game profile's instead."
+    ),
+    responses={
+        400: ResponseSpec(Error, description="Nothing to start from, or an item to keep isn't the right kind"),
+        404: ResponseSpec(Error, description="Nothing fits what was asked"),
+        503: ResponseSpec(Error, description="Generating isn't available right now"),
+    },
+)
+def generate_profiles(data: GenerateRequest) -> GenerateResults:
+    parts = tuple(data.parts) if data.parts is not None else PARTS
+    keep = data.keep or {}
+    unknown = sorted({part for part in [*parts, *keep] if part not in PARTS})
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown part: {', '.join(unknown)}")
+    if not [part for part in parts if part not in keep]:
+        raise HTTPException(status_code=400, detail="Nothing left to fill, every part is kept")
+
+    prompt = data.prompt.strip() if data.prompt and data.prompt.strip() else None
+    animated = data.animated
+    owned = owned_apps(data.owner) if data.owner is not None else None
+    named_apps: tuple[int, ...] = ()
+    understood = None
+
+    if prompt:
+        parsed = parse_query(prompt, list(PART_CATEGORIES.values()), app_index if data.app_id is None else None)
+        if parsed.found:
+            understood = {
+                "query": parsed.text or None,
+                "animated": parsed.animated,
+                "tiled": parsed.tiled,
+                "transparent": parsed.transparent,
+                "categories": parsed.categories,
+                "apps": [{"id": found_id, "name": name} for found_id, name in parsed.apps],
+            }
+            prompt = parsed.text or None
+            animated = parsed.animated if animated is None else animated
+            named_apps = tuple(found_id for found_id, _ in parsed.apps)
+
+    prompt_vector = get_text_embedding(prompt) if prompt else None
+    if prompt and prompt_vector is None:
+        raise HTTPException(status_code=503, detail="Text search isn't available right now")
+
+    colors = list(data.colors or []) or (colors_named(prompt) if prompt else [])
+    color_vector = None
+    tone_vector = None
+    if colors:
+        try:
+            neutral = neutral_colors(colors)
+            hued = [color for color in colors if color not in neutral]
+            color_vector = color_embedder.query_to_embedding(hued) if hued else None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        tone = tone_words(colors)
+        tone_vector = get_text_embedding(tone) if tone else None
+        if tone and tone_vector is None:
+            raise HTTPException(status_code=503, detail="Text search isn't available right now")
+
+    request = GenerationRequest(
+        prompt_vector=prompt_vector,
+        prompt_text=prompt,
+        colors=tuple(colors),
+        color_vector=color_vector,
+        tone_vector=tone_vector,
+        keep=keep or None,
+        game_profile=data.game_profile,
+        parts=parts,
+        app_id=data.app_id,
+        named_apps=named_apps,
+        animated=animated,
+        budget=data.budget,
+        exclude=tuple(data.exclude),
+        owned=(owned or frozenset()) if data.owner is not None else None,
+        count=data.count,
+    )
+
+    if not generation_slots.acquire(timeout=GENERATION_WAIT_SECONDS):
+        raise HTTPException(status_code=503, detail="Too many profiles are being generated, try again in a moment")
+    try:
+        options = generator.generate(request)
+    except GenerationError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Generate error")
+        raise HTTPException(status_code=500, detail=f"Generating failed: {e!s}") from e
+    finally:
+        generation_slots.release()
+
+    return {"options": options, "understood": understood, "owned_games": len(owned) if owned is not None else None}
 
 
 @get(
@@ -717,7 +1017,7 @@ def list_items(
 cors_config = CORSConfig(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app = Litestar(
-    route_handlers=[index, search_items, list_items, get_items_batch, get_item_by_id, get_item_by_name],
+    route_handlers=[index, search_items, generate_profiles, list_items, get_items_batch, get_item_by_id, get_item_by_name],
     openapi_config=OpenAPIConfig(
         title="Steam Style API",
         version="1.0.0",
@@ -733,13 +1033,14 @@ app = Litestar(
         tags=[
             Tag(name="Search", description="Find items by text, colors or looks, or browse the whole catalogue"),
             Tag(name="Items", description="Get single items, or list every item there is"),
+            Tag(name="Generate", description="Put whole profiles together from a prompt, colors or items to keep"),
         ],
         path="/docs",
         render_plugins=[SiteSwaggerRenderPlugin()],
         root_schema_site="swagger"
     ),
     cors_config=cors_config,
-    on_startup=[app_index.refresh_in_background],
+    on_startup=[app_index.refresh_in_background, generator.catalogue.load_in_background],
 )
 
 

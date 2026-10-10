@@ -79,7 +79,7 @@ class ItemDetails(BaseModel):
         "or `steam startup movies`",
         examples=["game profiles"],
     )
-    point_cost: str = Field(description="Price in Steam points, as Steam returns it", examples=["10000"])
+    point_cost: int = Field(description="Price in Steam points", examples=[10000])
     animated: bool = Field(description="Whether the item moves", examples=[False])
     transparent: bool = Field(description="Whether the image has transparent parts", examples=[False])
     tiled: bool = Field(description="Whether the background repeats as a pattern", examples=[False])
@@ -251,6 +251,10 @@ class SearchResults(BaseModel):
         default=None,
         description="What the words of the query said about the kind of item, null when the query was searched as it is",
     )
+    owned_games: int | None = Field(
+        default=None,
+        description="How many games `owner` owns, null without `owner` or when the account's game details are private",
+    )
 
 
 class ItemBatch(BaseModel):
@@ -279,6 +283,109 @@ class ItemList(BaseModel):
     total: int = Field(description="How many items there are in total", examples=[157000])
     next_cursor: int | None = Field(
         description="Pass as `cursor` to get the next page, null on the last page", examples=[198097])
+
+
+class GenerateRequest(BaseModel):
+    """
+    What to build profiles around. Give at least one of `prompt`, `colors`, `keep`, `game_profile` or `app_id`.
+    """
+
+    prompt: str | None = Field(
+        default=None, max_length=200, description="What the profile should look like", examples=["neon city at night"])
+    colors: list[str] | None = Field(
+        default=None,
+        max_length=5,
+        description="Hex colors the profile should have. When left out, colors named in the prompt, like black, are used",
+        examples=[["#1a9fff"]],
+    )
+    keep: dict[str, int] | None = Field(
+        default=None,
+        description="Items to keep, by part: `background`, `mini_profile`, `avatar` or `frame`. The rest is found around them",
+        examples=[{"avatar": 430398}],
+    )
+    game_profile: int | None = Field(
+        default=None,
+        description=(
+            "A game profile to keep. Its theme is used in every option, and when `background` isn't one of the parts, "
+            "the rest is matched to the game profile's background"
+        ),
+        examples=[None],
+    )
+    parts: list[str] | None = Field(
+        default=None,
+        description="The parts to fill, all four when left out",
+        examples=[["background", "avatar", "frame"]],
+    )
+    app_id: int | None = Field(
+        default=None, description="Game the background comes from. The other parts lean towards it", examples=[1145360])
+    animated: bool | None = Field(
+        default=None, description="True for an animated background, false for a still one", examples=[None])
+    budget: int | None = Field(default=None, ge=0, description="Most points the profile may cost", examples=[5000])
+    exclude: list[int] = Field(
+        default_factory=list,
+        max_length=300,
+        description="Items not to use, like the ones already shown, for a new round of options",
+        examples=[[]],
+    )
+    owner: int | None = Field(
+        default=None,
+        ge=76561197960265729,
+        le=76561202255233023,
+        description=(
+            "SteamID64 of an account, for only items it can buy. Steam sells a game's static backgrounds only to "
+            "people who own the game. The account's game details have to be public, when they're private every such "
+            "background is left out"
+        ),
+        examples=[None],
+    )
+    count: int = Field(default=6, ge=1, le=12, description="How many options to return", examples=[6])
+
+
+class GeneratedProfile(BaseModel):
+    """
+    One generated profile.
+    """
+
+    background: Item | None = Field(default=None, description="Profile background")
+    mini_profile: Item | None = Field(default=None, description="Mini-profile background")
+    avatar: Item | None = Field(
+        default=None, description="Animated avatar, null when none fits well enough or it wasn't asked for")
+    frame: Item | None = Field(
+        default=None, description="Avatar frame, null when none fits well enough or it wasn't asked for")
+    avatar_from_background: bool = Field(
+        default=False,
+        description="True when the avatar is best cut from the background behind it, to upload as a custom avatar",
+        examples=[False],
+    )
+    theme: str = Field(
+        description=(
+            "Theme that suits the background: one of Steam's free themes (default, summer, midnight, steel, cosmic or "
+            "darkMode), or gameProfile for the colors of `game_profile`"
+        ),
+        examples=["midnight"],
+    )
+    game_profile: Item | None = Field(
+        default=None, description="Game profile whose theme the profile uses, when `theme` is gameProfile")
+    set: int | None = Field(
+        description="App ID when every part comes from the same game or event, null for a mix", examples=[3331000])
+    points: int = Field(description="What the parts and theme cost together in Steam points", examples=[9000])
+    score: float = Field(description="How well the parts fit the request and each other, higher is better", examples=[19.4])
+
+
+class GenerateResults(BaseModel):
+    """
+    Generated profiles, best first, each with a different background.
+    """
+
+    options: list[GeneratedProfile]
+    understood: Understood | None = Field(
+        default=None,
+        description="What the words of the prompt said about the kind of profile, null when it was used as it is",
+    )
+    owned_games: int | None = Field(
+        default=None,
+        description="How many games `owner` owns, null without `owner` or when the account's game details are private",
+    )
 
 
 class Error(BaseModel):

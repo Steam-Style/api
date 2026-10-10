@@ -7,6 +7,7 @@ services:
       - COLLECTION_NAME=${COLLECTION_NAME:-Steam-Style-Items}
       - DEVICE=${DEVICE:-cpu}
       - MODEL_NAME=${MODEL_NAME:-google/siglip2-base-patch16-224}
+      - STEAM_API_KEY=${STEAM_API_KEY:-}
     expose:
       - "8000"
     healthcheck:

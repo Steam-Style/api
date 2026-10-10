@@ -157,6 +157,42 @@ REVIEWS_REFRESH_SECONDS = 86_400
 App = tuple[int, str]
 
 
+COLOR_WORDS = {
+    "black": "#000000",
+    "white": "#ffffff",
+    "grey": "#808080",
+    "gray": "#808080",
+    "silver": "#c0c0c0",
+    "red": "#d62828",
+    "orange": "#f07c12",
+    "yellow": "#f5d327",
+    "gold": "#d4a72c",
+    "golden": "#d4a72c",
+    "green": "#2ea043",
+    "teal": "#1a9e9a",
+    "cyan": "#1fc8e0",
+    "blue": "#1f6fe0",
+    "navy": "#1b2a6b",
+    "purple": "#8a3ad6",
+    "violet": "#8f5be0",
+    "pink": "#f062a8",
+    "magenta": "#e01fc8",
+    "brown": "#7a5232",
+}
+
+
+def colors_named(text: str) -> list[str]:
+    """
+    The colours a text names, as hex in the order they're named, so "black and gold" is #000000 and #d4a72c.
+    """
+    colors: list[str] = []
+    for word in words_of(text):
+        color = COLOR_WORDS.get(word)
+        if color and color not in colors:
+            colors.append(color)
+    return colors
+
+
 def words_of(text: str) -> list[str]:
     """
     Splits text into lowercase words without punctuation, so "Baldur's Gate 3: Deluxe" becomes baldurs, gate, 3 and

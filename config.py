@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "Steam-Style-Items"
     MODEL_NAME: str = "google/siglip2-base-patch16-224"
     DEVICE: str = "cpu"
+    STEAM_API_KEY: str | None = None
 
     COLOR_HUE_BINS: int = 24
     COLOR_SAT_BINS: int = 3
