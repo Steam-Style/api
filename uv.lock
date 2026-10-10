@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "sys_platform != 'darwin'",
@@ -1002,7 +1002,7 @@ dev = [{ name = "ruff", specifier = ">=0.16.3" }]
 [[package]]
 name = "steam-style-embeddings"
 version = "0.1.0"
-source = { git = "https://github.com/Steam-Style/ingestion?subdirectory=packages%2Fsteam-style-embeddings&branch=master#ab91a0025881d97b6f9a2cd013e049136191b127" }
+source = { git = "https://github.com/Steam-Style/ingestion?subdirectory=packages%2Fsteam-style-embeddings&branch=master#85f53797f73e562ea99614b4a7f3e4511229b3e8" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
@@ -1070,13 +1070,13 @@ resolution-markers = [
     "sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform == 'darwin'" },
-    { name = "fsspec", marker = "sys_platform == 'darwin'" },
-    { name = "jinja2", marker = "sys_platform == 'darwin'" },
-    { name = "networkx", marker = "sys_platform == 'darwin'" },
-    { name = "setuptools", marker = "sys_platform == 'darwin'" },
-    { name = "sympy", marker = "sys_platform == 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
+    { name = "setuptools" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:d849b390e07d8d333ce8ecaf91b273c656c598379a19c9acf1318a883f6b391c", upload-time = "2026-07-08T12:26:28Z" },
@@ -1091,13 +1091,13 @@ resolution-markers = [
     "sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform != 'darwin'" },
-    { name = "fsspec", marker = "sys_platform != 'darwin'" },
-    { name = "jinja2", marker = "sys_platform != 'darwin'" },
-    { name = "networkx", marker = "sys_platform != 'darwin'" },
-    { name = "setuptools", marker = "sys_platform != 'darwin'" },
-    { name = "sympy", marker = "sys_platform != 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
+    { name = "setuptools" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314-linux_s390x.whl", hash = "sha256:dec241fef3984c0d1edadd1f58708e218d4eae881ceef7bc10cf9964d41b68b9", upload-time = "2026-07-08T19:30:20Z" },
