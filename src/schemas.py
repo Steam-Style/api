@@ -91,10 +91,15 @@ class ItemDetails(BaseModel):
     sold_separately: bool = Field(
         default=True,
         description=(
-            "Whether the item can be bought on its own. False for the parts of a game profile and for items the "
-            "Points Shop only sells to some people, like the Steam Deck profile"
+            "Whether the item can be bought on its own. False for the parts of a game profile, see `game_profile`, "
+            "and for items that aren't for sale, like event rewards and the Steam Deck profile"
         ),
         examples=[True],
+    )
+    game_profile: int | None = Field(
+        default=None,
+        description="ID of the game profile the item comes with, null when it isn't part of one",
+        examples=[None],
     )
     assets: Assets
 

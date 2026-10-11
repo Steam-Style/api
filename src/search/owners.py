@@ -13,6 +13,8 @@ from qdrant_client import models
 OWNED_GAMES_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/"
 OWNERS_ONLY = ["profile backgrounds", "emoticons"]
 KEEP_SECONDS = 600
+STEAMID_MIN = 76561197960265729
+STEAMID_MAX = 76561202255233023
 MAX_ACCOUNTS = 5000
 TIMEOUT_SECONDS = 10
 

@@ -56,7 +56,7 @@ To run it without Docker, set `DATABASE_URL=http://localhost:6333` in `.env` and
 
 ```bash
 uv sync
-uv run --env-file .env uvicorn main:app --port 8000
+uv run --env-file .env uvicorn main:app --app-dir src --port 8000
 ```
 
 ### Settings

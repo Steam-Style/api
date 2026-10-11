@@ -3,7 +3,7 @@ Puts whole profiles together from the catalogue: a background, mini-profile, ava
 for and each other, as a handful of options that look different from each other, each with a theme that suits it.
 
 Every measure is turned into how far it is from what two random items score, measured across the catalogue and kept
-in generator_stats.json, so the weights below mean the same thing for every part and pair.
+in stats.json, so the weights below mean the same thing for every part and pair.
 
 Mini-profiles, avatars, frames and game profiles are few enough to keep in memory and search with numpy, so only
 backgrounds are looked up in the database.
@@ -15,7 +15,7 @@ that the frame is left out, and the avatar is cut from the background behind it,
 Backgrounds rank higher the better their best theme suits them (THEME_FIT): in ratings, the picked options had
 themes that fit noticeably better than the rest. They also rank higher the better they look (QUALITY_WEIGHT), going by
 how much more their picture is like "high quality art" than "low quality image" (four wordings averaged, the vector is
-in generator_stats.json). Picked options looked better that way in all three rounds of ratings.
+in stats.json). Picked options looked better that way in all three rounds of ratings.
 
 Item names matching the prompt add a little (NAME_MATCH_BONUS, scaled like the prompt for each part): ratings showed
 no preference for them, and a strong bonus let sets with the prompt in their names, like "Kasumi_Anime", take over.
@@ -47,7 +47,7 @@ from typing import Any
 import numpy as np
 from qdrant_client import QdrantClient, models
 
-from owners import unowned
+from search.owners import unowned
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ NAME_STOP_WORDS = {
     "background", "backgrounds", "profile", "profiles", "steam", "theme", "style", "aesthetic", "vibe", "vibes",
 }
 
-_stats = json.loads((Path(__file__).parent / "generator_stats.json").read_text())
+_stats = json.loads((Path(__file__).parent / "stats.json").read_text())
 MEANS = {part: np.array(values, dtype=np.float32) for part, values in _stats["means"].items()}
 PICTURE_SCALE = {tuple(pair.split(":")): values for pair, values in _stats["picture"].items()}
 COLOR_SCALE = {tuple(pair.split(":")): values for pair, values in _stats["color"].items()}
@@ -593,10 +593,21 @@ def _pair_scores(first: Pool, second: Pool, weighed_as: tuple[str, str] | None =
     return scores.astype(np.float32)
 
 
+def _not_for_sale() -> list[models.Condition]:
+    """
+    Items that can't be bought on their own: ones the Points Shop stopped selling, game profile parts, which come with
+    their game profile, and event rewards. A generated profile is bought item by item, so they're never part of one
+    """
+    return [
+        models.FieldCondition(key="item.available", match=models.MatchValue(value=False)),
+        models.FieldCondition(key="item.sold_separately", match=models.MatchValue(value=False)),
+    ]
+
+
 def _filter(part: str, request: Request, extra: list[models.Condition] | None = None) -> models.Filter:
-    """Only items of the part's category that are still sold, within the game and animation asked for and that the owner can buy"""
+    """Only items of the part's category that are for sale, within the game and animation asked for and that the owner can buy"""
     must: list[models.Condition] = [models.FieldCondition(key="item.category", match=models.MatchValue(value=CATEGORIES[part]))]
-    must_not: list[models.Condition] = [models.FieldCondition(key="item.available", match=models.MatchValue(value=False))]
+    must_not = _not_for_sale()
 
     if part == "background" and request.app_id is not None:
         must.append(models.FieldCondition(key="app.id", match=models.MatchValue(value=request.app_id)))
@@ -632,7 +643,7 @@ def _shuffled(part: str, request: Request, limit: int, extra: list[models.Condit
 
 
 def _scroll(client: QdrantClient, collection: str, category: str, fields: list[str], vectors: list[str] | bool) -> list[Any]:
-    """Every item of a category that's still sold"""
+    """Every item of a category that's for sale"""
     points: list[Any] = []
     offset = None
     while True:
@@ -640,7 +651,7 @@ def _scroll(client: QdrantClient, collection: str, category: str, fields: list[s
             collection,
             scroll_filter=models.Filter(
                 must=[models.FieldCondition(key="item.category", match=models.MatchValue(value=category))],
-                must_not=[models.FieldCondition(key="item.available", match=models.MatchValue(value=False))],
+                must_not=_not_for_sale(),
             ),
             limit=CATALOGUE_PAGE,
             offset=offset,
