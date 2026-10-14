@@ -19,17 +19,6 @@ LOGO = f"""
 </a>
 """
 
-GITHUB_ICON = (
-    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" '
-    'd="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013'
-    "-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 "
-    "1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 "
-    "0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 "
-    "1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 "
-    "0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 "
-    '10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>'
-)
-
 HEADER = f"""
 <header class="site-header">
   <div class="site-header__inner">
@@ -39,6 +28,58 @@ HEADER = f"""
 </header>
 """
 
+ITEM_LINKS = [
+    ("Backgrounds", "backgrounds"),
+    ("Animated backgrounds", "animated-backgrounds"),
+    ("Avatars", "avatars"),
+    ("Avatar frames", "avatar-frames"),
+    ("Mini-profiles", "mini-profiles"),
+    ("Game profiles", "game-profiles"),
+    ("Emoticons", "emoticons"),
+    ("Stickers", "stickers"),
+    ("Chat effects", "chat-effects"),
+    ("Deck keyboards", "deck-keyboards"),
+    ("Startup movies", "startup-movies"),
+    ("Free items", "free"),
+]
+SITE_LINKS = [
+    ("Explore", f"{SITE_URL}/"),
+    ("Studio", f"{SITE_URL}/studio"),
+    ("About", f"{SITE_URL}/about"),
+    ("Privacy", f"{SITE_URL}/privacy"),
+]
+MORE_LINKS = [
+    ("API docs", "/docs"),
+    ("GitHub", "https://github.com/Steam-Style"),
+    ("Sponsor", "https://github.com/sponsors/Steam-Style"),
+    ("Contact", "mailto:info@steam.style"),
+]
+
+
+def link_column(title: str, links: list[tuple[str, str]], wide: bool = False) -> str:
+    """
+    One titled group of footer links, laid out like the site's footer.
+
+    Args:
+        title (str): The group's title.
+        links (list[tuple[str, str]]): Each link's text and address.
+        wide (bool): Lays the links out in two columns.
+
+    Returns:
+        str: The group's HTML.
+    """
+    items = []
+    for label, href in links:
+        target = "" if href.startswith(("/", SITE_URL)) else ' target="_blank"'
+        items.append(f'<li><a href="{href}"{target}>{label}</a></li>')
+
+    modifier = " site-footer__group--wide" if wide else ""
+    return (
+        f'<nav class="site-footer__group{modifier}" aria-label="{title}">'
+        f'<p class="site-footer__title">{title}</p><ul class="site-footer__list">{"".join(items)}</ul></nav>'
+    )
+
+
 FOOTER = f"""
 <footer class="site-footer">
   <div class="site-footer__inner">
@@ -47,16 +88,9 @@ FOOTER = f"""
         {LOGO}
         <p>A better way to find profile items from the Steam Points Shop.</p>
       </div>
-
-      <div class="site-footer__links">
-        <a href="{SITE_URL}">Explore</a>
-        <a href="{SITE_URL}/about">About</a>
-        <a href="{SITE_URL}/privacy">Privacy</a>
-        <a href="/docs">API docs</a>
-        <a href="https://github.com/sponsors/Steam-Style" target="_blank">Sponsor</a>
-        <a href="mailto:info@steam.style" target="_blank">Contact</a>
-        <a href="https://github.com/Steam-Style" target="_blank" aria-label="Steam Style on GitHub">{GITHUB_ICON}</a>
-      </div>
+      {link_column("Items", [(label, f"{SITE_URL}/{slug}") for label, slug in ITEM_LINKS], wide=True)}
+      {link_column("Site", SITE_LINKS)}
+      {link_column("More", MORE_LINKS)}
     </div>
 
     <div class="site-footer__bottom">

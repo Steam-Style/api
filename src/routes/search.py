@@ -9,14 +9,23 @@ from litestar import get
 from litestar.exceptions import HTTPException
 from litestar.openapi import ResponseSpec
 from litestar.params import Parameter
+from qdrant_client import models
 
 from clients import app_index, collection_features, owned_apps
 from schemas import Error, SearchResults
 from search.cache import SearchCache
 from search.filters import SearchRequest, build_query_filter
+from search.links import parse_reference
 from search.owners import STEAMID_MAX, STEAMID_MIN
 from search.parsing import CATEGORIES, parse_query
-from search.ranking import boost_conditions, build_prefetch, query_items, scroll_items
+from search.ranking import (
+    boost_conditions,
+    build_prefetch,
+    find_item_by_name,
+    matching_items,
+    query_items,
+    scroll_items,
+)
 
 SEARCH_CACHE_SECONDS = 300
 SEARCH_CACHE_SIZE = 500
@@ -56,6 +65,36 @@ def _search(
     requested_categories = [
         unquote_plus(value).lower().strip() for value in category_values if value and value.strip()
     ]
+
+    reference = parse_reference(search_query) if parse and search_query else None
+    item_link = reference is not None and not reference.bare and (
+        reference.item_id is not None or reference.item_name is not None
+    )
+    linked_item: int | None = None
+    pinned_item: int | None = None
+
+    if reference is not None and reference.item_name is not None and reference.app_id is not None:
+        found = find_item_by_name(reference.app_id, reference.item_name)
+        linked_item = (found or {}).get("item", {}).get("id")
+        search_query = None
+    elif reference is not None and reference.item_id is not None:
+        if reference.bare:
+            pinned_item = reference.item_id
+        else:
+            linked_item = reference.item_id
+            search_query = None
+    elif reference is not None and reference.app_id is not None:
+        app_name = app_index.apps.get(reference.app_id)
+        app_id = reference.app_id if app_id is None else app_id
+        search_query = None
+        understood = {
+            "query": None,
+            "animated": None,
+            "tiled": None,
+            "transparent": None,
+            "categories": [],
+            "apps": [{"id": reference.app_id, "name": app_name}] if app_name else [],
+        }
 
     if parse and search_query and search_query.strip():
         allowed = CATEGORIES if "all" in requested_categories else requested_categories
@@ -113,9 +152,24 @@ def _search(
 
     query_filter = build_query_filter(data)
 
+    if item_link:
+        linked = matching_items([linked_item], query_filter) if linked_item is not None and data.offset == 0 else []
+        return {"results": linked, "understood": None, "owned_games": owned_games_count}
+
+    pinned = matching_items([pinned_item], query_filter) if pinned_item is not None else []
+    if pinned:
+        query_filter = models.Filter(must=[query_filter], must_not=[models.HasIdCondition(has_id=[pinned_item])])
+        if data.offset == 0:
+            data = data.model_copy(update={"limit": data.limit - 1})
+        else:
+            pinned = []
+            data = data.model_copy(update={"offset": data.offset - 1})
+        if data.limit == 0:
+            return {"results": pinned, "understood": understood, "owned_games": owned_games_count}
+
     if not has_query and not has_colors and not has_similar:
         return {
-            "results": scroll_items(
+            "results": pinned + scroll_items(
                 query_filter=query_filter,
                 limit=data.limit,
                 offset=data.offset,
@@ -134,7 +188,7 @@ def _search(
     boosts = boost_conditions(parsed, data, requested_categories) if parsed else []
 
     return {
-        "results": query_items(data, query_filter, prefetch, boosts),
+        "results": pinned + query_items(data, query_filter, prefetch, boosts),
         "understood": understood,
         "owned_games": owned_games_count,
     }
@@ -162,7 +216,13 @@ def _search(
 def search_items(
     search_query: str | None = Parameter(
         query="query", default=None, max_length=MAX_QUERY_LENGTH,
-        description="What you're looking for, like `rainy city at night`. Matches what items look like, not only their names"),
+        description=(
+            "What you're looking for, like `rainy city at night`. Matches what items look like, not only their names. "
+            "A link to an item, like `https://store.steampowered.com/points/shop/reward/75843` or a Community Market "
+            "listing, returns only that item. A link to a game's Points Shop, store or Market page returns its items. "
+            "An item ID like `75843` puts that item first, then searches for the number as usual. Links and IDs follow "
+            "the other filters, and `parse=false` searches them as words"
+        )),
     similar_to: int | None = Parameter(
         default=None, ge=0,
         description="ID of an item to find lookalikes of. The item itself is left out"),

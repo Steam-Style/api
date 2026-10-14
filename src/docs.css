@@ -117,12 +117,13 @@ a {
 }
 
 .site-footer__top {
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px 24px;
 }
 
 .site-footer__about {
+  grid-column: span 2;
   max-width: 384px;
 }
 
@@ -132,36 +133,47 @@ a {
   line-height: 1.625;
 }
 
-.site-footer__links {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 24px;
+.site-footer__group--wide {
+  grid-column: span 2;
+}
+
+.site-footer__title {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.site-footer__list {
+  display: grid;
+  row-gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
   font-size: 14px;
   line-height: 20px;
 }
 
-.site-footer__links a {
-  color: var(--text);
+.site-footer__group--wide .site-footer__list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
+}
+
+.site-footer__list a {
+  color: inherit;
   text-decoration: none;
-  transition: color 0.2s ease-out;
 }
 
-.site-footer__links a:hover {
+.site-footer__list a:hover {
   color: #ffffff;
-}
-
-.site-footer__links svg {
-  display: block;
-  width: 20px;
-  height: 20px;
 }
 
 .site-footer__bottom {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 32px;
+  margin-top: 40px;
   padding-top: 24px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   font-size: 12px;
@@ -226,12 +238,6 @@ a {
   .site-footer__inner {
     padding-right: 24px;
     padding-left: 24px;
-  }
-
-  .site-footer__top {
-    flex-direction: row;
-    align-items: flex-start;
-    justify-content: space-between;
   }
 
   .site-footer__bottom {
@@ -835,4 +841,22 @@ a {
 
 .swagger-ui .json-schema-2020-12__attribute--primary {
   color: var(--link);
+}
+
+@media (min-width: 1024px) {
+  .site-footer__top {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+
+  .site-footer__about {
+    grid-column: span 4;
+  }
+
+  .site-footer__group {
+    grid-column: span 2;
+  }
+
+  .site-footer__group--wide {
+    grid-column: span 4;
+  }
 }

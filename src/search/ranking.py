@@ -52,6 +52,64 @@ def scroll_items(
     return [cast(dict[str, Any], p.payload) for p in results.points]
 
 
+def find_item_by_name(app_id: int, name: str) -> dict[str, Any] | None:
+    """
+    Finds an item by its game and exact name, the way the Community Market names items.
+
+    Args:
+        app_id (int): The game the item comes from.
+        name (str): The item's exact name.
+
+    Returns:
+        dict[str, Any] | None: The item, None when there's no such item.
+    """
+    try:
+        points, _ = qdrant_client.scroll(
+            collection_name=settings.COLLECTION_NAME,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(key="app.id", match=models.MatchValue(value=app_id)),
+                    models.FieldCondition(key="item.name", match=models.MatchValue(value=name)),
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.exception("Scroll error")
+        raise HTTPException(status_code=500, detail=f"Database error: {e!s}") from e
+
+    return cast(dict[str, Any], points[0].payload) if points else None
+
+
+def matching_items(item_ids: list[int], query_filter: models.Filter) -> list[dict[str, Any]]:
+    """
+    The items with these IDs that pass the filters of a search, in the order given.
+
+    Args:
+        item_ids (list[int]): The items to look for.
+        query_filter (models.Filter): The search's filters.
+
+    Returns:
+        list[dict[str, Any]]: The items that exist and pass.
+    """
+    try:
+        points, _ = qdrant_client.scroll(
+            collection_name=settings.COLLECTION_NAME,
+            scroll_filter=models.Filter(must=[query_filter, models.HasIdCondition(has_id=list(item_ids))]),
+            limit=len(item_ids),
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.exception("Scroll error")
+        raise HTTPException(status_code=500, detail=f"Database error: {e!s}") from e
+
+    found = {int(point.id): cast(dict[str, Any], point.payload) for point in points}
+    return [found[item_id] for item_id in item_ids if item_id in found]
+
+
 def build_prefetch(
     data: SearchRequest,
     query_filter: models.Filter,

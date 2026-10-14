@@ -10,11 +10,11 @@ from litestar.exceptions import HTTPException
 from litestar.openapi import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Redirect
-from qdrant_client import models
 
 from clients import qdrant_client
 from config import settings
 from schemas import Error, Item, ItemBatch, ItemList
+from search.ranking import find_item_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -32,38 +32,15 @@ def get_item_by_name(
     app_id: int = Parameter(description="Steam app ID the item comes from"),
     item_name: str = Parameter(description="Exact item name, like `Dying Light 2 Stay Human Profile`"),
 ) -> Item | Redirect:
-    try:
-        results, _ = qdrant_client.scroll(
-            collection_name=settings.COLLECTION_NAME,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="app.id",
-                        match=models.MatchValue(value=app_id)
-                    ),
-                    models.FieldCondition(
-                        key="item.name",
-                        match=models.MatchValue(value=item_name)
-                    )
-                ]
-            ),
-            limit=1,
-            with_payload=True,
-            with_vectors=False,
-        )
-    except Exception as e:
-        logger.exception("Scroll error")
-        raise HTTPException(
-            status_code=500, detail=f"Database error: {e!s}") from e
+    result_item = find_item_by_name(app_id, item_name)
 
-    if not results:
+    if result_item is None:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    result_item = cast(dict[str, Any], results[0].payload)
     item_id = result_item.get("item", {}).get("id")
 
     if item_id is None:
-        return cast(dict[str, Any], results[0].payload)
+        return result_item
     else:
         return Redirect(f"/item/{item_id}")
 

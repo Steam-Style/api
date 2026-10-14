@@ -312,6 +312,7 @@ class AppIndex:
         self.refresh_seconds = refresh_seconds
         self.names: dict[str, list[App]] = {}
         self.abbreviations: dict[str, list[App]] = {}
+        self.apps: dict[int, str] = {}
         self.reviews: dict[int, int] = {}
         self.refreshed_at = 0.0
         self.reviews_fetched_at = -float(REVIEWS_REFRESH_SECONDS)
@@ -354,6 +355,7 @@ class AppIndex:
             return
 
         self.names, self.abbreviations = build_lookups(apps, items, self.reviews)
+        self.apps = apps
         self.refreshed_at = time.monotonic()
 
         stale = time.monotonic() - self.reviews_fetched_at >= REVIEWS_REFRESH_SECONDS
