@@ -292,7 +292,8 @@ class ItemList(BaseModel):
 
 class GenerateRequest(BaseModel):
     """
-    What to build profiles around. Give at least one of `prompt`, `colors`, `keep`, `game_profile` or `app_id`.
+    What to build profiles around. Give at least one of `prompt`, `colors`, `keep` or `app_id`, or a `game_profile`
+    whose background stays.
     """
 
     prompt: str | None = Field(
@@ -313,6 +314,14 @@ class GenerateRequest(BaseModel):
         description=(
             "A game profile to keep. Its theme is used in every option, and when `background` isn't one of the parts, "
             "the rest is matched to the game profile's background"
+        ),
+        examples=[None],
+    )
+    theme: str | None = Field(
+        default=None,
+        description=(
+            "One of Steam's free themes to use in every option: `default`, `summer`, `midnight`, `steel`, `cosmic` or "
+            "`darkMode`. Backgrounds that suit it rank higher. Use `game_profile` for a game profile's theme"
         ),
         examples=[None],
     )

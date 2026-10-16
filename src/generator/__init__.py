@@ -201,8 +201,9 @@ class Request:
     The game in app_id is where the background comes from, the other parts lean towards it. Items named like the words
     of prompt_text rank higher. color_vector holds the colours with a hue and tone_vector the words for the neutral
     ones, both from colors (see neutral_colors). game_profile is a game profile that stays: its theme is every option's
-    theme, and when the background isn't one of the parts it's the game profile's, which the rest is matched to.
-    reviews is how many store reviews each game has, so well-known games rank a little higher
+    theme, and when the background isn't one of the parts it's the game profile's, which the rest is matched to. theme is
+    one of Steam's free themes that stays the same way. reviews is how many store reviews each game has, so well-known
+    games rank a little higher
     """
 
     prompt_vector: list[float] | None = None
@@ -212,6 +213,7 @@ class Request:
     tone_vector: list[float] | None = None
     keep: dict[str, int] | None = None
     game_profile: int | None = None
+    theme: str | None = None
     parts: tuple[str, ...] = PARTS
     app_id: int | None = None
     named_apps: tuple[int, ...] = ()
@@ -729,8 +731,9 @@ class Generator:
         self.catalogue = Catalogue(client, collection)
 
     def generate(self, request: Request) -> list[dict[str, Any]]:
+        profile_start = request.game_profile is not None and "background" not in request.parts
         if (request.prompt_vector is None and request.color_vector is None and request.tone_vector is None
-                and not request.keep and request.game_profile is None and request.app_id is None):
+                and not request.keep and not profile_start and request.app_id is None):
             raise GenerationError("Give a prompt, colors, an item to keep or a game to start from", 400)
 
         self.catalogue.refresh_if_stale()
@@ -755,8 +758,10 @@ class Generator:
             if not len(pools["background"]):
                 raise GenerationError("No background fits that")
             backgrounds = pools["background"]
-            backgrounds.relevance = _relevance(backgrounds, request) + THEME_FIT * self._theme_scores(
-                backgrounds, np.arange(len(backgrounds)), request).max(axis=0)
+            fits = self._theme_scores(backgrounds, np.arange(len(backgrounds)), request)
+            fixed = self._fixed_theme(request)
+            backgrounds.relevance = _relevance(backgrounds, request) + THEME_FIT * (
+                fits[fixed] if fixed is not None else fits.max(axis=0))
 
         anchors = self._anchors(pools.get("background"), kept)
         for part in parts:
@@ -1010,6 +1015,17 @@ class Generator:
             })
         return options
 
+    def _fixed_theme(self, request: Request) -> int | None:
+        """The theme every option gets, when the request keeps one: a game profile's or one of Steam's free ones"""
+        themes = self.catalogue.themes
+        if request.game_profile is not None:
+            own = np.flatnonzero(themes.ids == request.game_profile)
+            return int(own[0]) if len(own) else None
+        if request.theme is not None:
+            free = [index for index, name in enumerate(themes.names) if name == request.theme and themes.ids[index] == 0]
+            return free[0] if free else None
+        return None
+
     def _theme_scores(self, backgrounds: Pool | None, rows: np.ndarray, request: Request) -> np.ndarray:
         """
         How well every theme goes with each of the background `rows`, as themes by backgrounds: their colours matched,
@@ -1044,10 +1060,9 @@ class Generator:
         the `taken` ones
         """
         themes = self.catalogue.themes
-        if request.game_profile is not None:
-            own = np.flatnonzero(themes.ids == request.game_profile)
-            if len(own):
-                return int(own[0])
+        fixed = self._fixed_theme(request)
+        if fixed is not None:
+            return fixed
         if "background" in axes:
             background = row[axes["background"]]
             score = self._theme_scores(pools["background"], np.array([background]), request)[:, 0]

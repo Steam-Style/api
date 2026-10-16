@@ -11,7 +11,7 @@ from litestar.openapi import ResponseSpec
 
 from clients import app_index, color_embedder, generator, get_text_embedding, owned_apps
 from generator import CATEGORIES as PART_CATEGORIES
-from generator import PARTS, GenerationError, neutral_colors, tone_words
+from generator import FREE_THEMES, PARTS, GenerationError, neutral_colors, tone_words
 from generator import Request as GenerationRequest
 from schemas import Error, GenerateRequest, GenerateResults
 from search.parsing import colors_named, parse_query
@@ -38,7 +38,9 @@ generation_slots = threading.BoundedSemaphore(GENERATION_SLOTS)
         "When no frame fits well enough, the option has none. When no avatar does, `avatar_from_background` is true: "
         "the avatar is cut from the background behind it and uploaded as a custom one.\n\n"
         "To keep a game profile, pass it as `game_profile` and leave the parts it brings out of `parts`. Its theme is "
-        "used, and when its background stays, the options have no background and match the game profile's instead."
+        "used, and when its background stays, the options have no background and match the game profile's instead. "
+        "To keep only a theme, pass one of Steam's free ones as `theme`, or a game profile as `game_profile` with all "
+        "four parts."
     ),
     responses={
         400: ResponseSpec(Error, description="Nothing to start from, or an item to keep isn't the right kind"),
@@ -54,6 +56,10 @@ def generate_profiles(data: GenerateRequest) -> GenerateResults:
         raise HTTPException(status_code=400, detail=f"Unknown part: {', '.join(unknown)}")
     if not [part for part in parts if part not in keep]:
         raise HTTPException(status_code=400, detail="Nothing left to fill, every part is kept")
+    if data.theme is not None and data.theme not in FREE_THEMES:
+        raise HTTPException(status_code=400, detail=f"Unknown theme: {data.theme}")
+    if data.theme is not None and data.game_profile is not None:
+        raise HTTPException(status_code=400, detail="Give a theme or a game profile, not both")
 
     prompt = data.prompt.strip() if data.prompt and data.prompt.strip() else None
     animated = data.animated
@@ -103,6 +109,7 @@ def generate_profiles(data: GenerateRequest) -> GenerateResults:
         tone_vector=tone_vector,
         keep=keep or None,
         game_profile=data.game_profile,
+        theme=data.theme,
         parts=parts,
         app_id=data.app_id,
         named_apps=named_apps,
