@@ -24,7 +24,7 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0, description="Offset for pagination")
     sort: str | None = Field(
-        default=None, description="Sort by: 'newest', 'oldest', 'updated', 'random'")
+        default=None, description="Sort by: 'popular', 'least_popular', 'newest', 'oldest', 'updated', 'random'")
     animated: bool | None = Field(
         default=None, description="True=only animated, False=exclude animated, None=all")
     tiled: bool | None = Field(
@@ -121,6 +121,12 @@ def build_query_filter(data: SearchRequest) -> models.Filter:
 
 
 def sort_query(sort: str | None) -> models.OrderByQuery | models.SampleQuery | None:
+    if sort == "popular":
+        return models.OrderByQuery(order_by=models.OrderBy(
+            key="item.popularity", direction=models.Direction.ASC))
+    if sort == "least_popular":
+        return models.OrderByQuery(order_by=models.OrderBy(
+            key="item.popularity", direction=models.Direction.DESC))
     if sort == "newest":
         return models.OrderByQuery(order_by=models.OrderBy(
             key="timestamps.created_at", direction=models.Direction.DESC))

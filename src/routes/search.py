@@ -21,6 +21,7 @@ from search.parsing import CATEGORIES, parse_query
 from search.ranking import (
     boost_conditions,
     build_prefetch,
+    find_emoticon,
     find_item_by_name,
     matching_items,
     query_items,
@@ -32,6 +33,7 @@ SEARCH_CACHE_SIZE = 500
 MAX_QUERY_LENGTH = 200
 MAX_SEARCH_COLORS = 10
 MAX_OFFSET = 10_000
+POPULAR_SORTS = ("popular", "least_popular")
 
 search_cache = SearchCache(SEARCH_CACHE_SECONDS, SEARCH_CACHE_SIZE)
 
@@ -58,6 +60,8 @@ def _search(
     understood = None
     parsed = None
     category_values = category if category is not None else ["all"]
+    if sort in POPULAR_SORTS and not collection_features().popularity:
+        sort = "newest"
     if max_points is not None and not collection_features().prices:
         raise HTTPException(status_code=503, detail="Filtering by price isn't available yet")
     owned = owned_apps(owner) if owner is not None else None
@@ -72,11 +76,14 @@ def _search(
     )
     linked_item: int | None = None
     pinned_item: int | None = None
+    emoticon_code: str | None = None
 
     if reference is not None and reference.item_name is not None and reference.app_id is not None:
         found = find_item_by_name(reference.app_id, reference.item_name)
         linked_item = (found or {}).get("item", {}).get("id")
         search_query = None
+    elif reference is not None and reference.item_name is not None:
+        emoticon_code = reference.item_name
     elif reference is not None and reference.item_id is not None:
         if reference.bare:
             pinned_item = reference.item_id
@@ -151,6 +158,8 @@ def _search(
     has_colors = data.colors is not None and len(data.colors) > 0
 
     query_filter = build_query_filter(data)
+    if emoticon_code is not None:
+        pinned_item = find_emoticon(emoticon_code, query_filter)
 
     if item_link:
         linked = matching_items([linked_item], query_filter) if linked_item is not None and data.offset == 0 else []
@@ -220,8 +229,8 @@ def search_items(
             "What you're looking for, like `rainy city at night`. Matches what items look like, not only their names. "
             "A link to an item, like `https://store.steampowered.com/points/shop/reward/75843` or a Community Market "
             "listing, returns only that item. A link to a game's Points Shop, store or Market page returns its items. "
-            "An item ID like `75843` puts that item first, then searches for the number as usual. Links and IDs follow "
-            "the other filters, and `parse=false` searches them as words"
+            "An item ID like `75843` or an emoticon's code like `:steamhappy:` puts that item first, then searches as "
+            "usual. Links, IDs and codes follow the other filters, and `parse=false` searches them as words"
         )),
     similar_to: int | None = Parameter(
         default=None, ge=0,
@@ -244,10 +253,10 @@ def search_items(
     offset: int = Parameter(
         default=0, ge=0, le=MAX_OFFSET, description="How many results to skip, for paging, up to 10,000"),
     sort: str | None = Parameter(
-        default="newest",
+        default="popular",
         description=(
-            "Order when browsing: `newest`, `oldest`, `updated` or `random`. "
-            "Searches are always ordered by best match"
+            "Order when browsing: `popular` and `least_popular` follow the Points Shop's own popular order, or "
+            "`newest`, `oldest`, `updated` or `random`. Searches are always ordered by best match"
         ),
     ),
     animated: bool | None = Parameter(

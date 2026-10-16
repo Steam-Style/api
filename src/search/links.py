@@ -1,6 +1,6 @@
 """
-Recognises item IDs and links to items or games in a search, in the forms Steam, the Community Market and steam.style
-use, so pasting where an item lives finds it.
+Recognises item IDs, emoticon codes like :steamhappy:, and links to items or games in a search, in the forms Steam,
+the Community Market and steam.style use, so pasting where an item lives finds it.
 """
 
 import re
@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 BARE_ID = re.compile(r"#?(\d{1,10})")
+EMOTICON_CODE = re.compile(r":[A-Za-z0-9_]{1,64}:")
 APP_TAG = re.compile(r"tag_app_(\d+)")
 STEAM_COMMUNITY_APP = "753"
 
@@ -15,13 +16,15 @@ STEAM_COMMUNITY_APP = "753"
 @dataclass(frozen=True)
 class Reference:
     """
-    What a search pointed at: an item by its ID, an item by its game and exact name, or a whole game.
+    What a search pointed at: an item by its ID, an item by its game and exact name, an emoticon by its code, or a
+    whole game.
 
     Attributes:
         item_id (int | None): The item's ID, which is its ID in the Points Shop.
         app_id (int | None): The game, alone for a link to a game, or with item_name for a Market listing.
-        item_name (str | None): The item's exact name, from a Market listing.
-        bare (bool): The search was only a number, which may also be words to search for, like 2077.
+        item_name (str | None): The item's exact name, from a Market listing, or an emoticon's code.
+        bare (bool): The search was only a number or an emoticon's code, which may also be words to search for, like
+            2077.
     """
 
     item_id: int | None = None
@@ -81,7 +84,7 @@ def _community(path: list[str], query: dict[str, str]) -> Reference | None:
 
 def parse_reference(text: str) -> Reference | None:
     """
-    Works out whether a search is an item ID or a link to an item or a game.
+    Works out whether a search is an item ID, an emoticon's code or a link to an item or a game.
 
     Args:
         text (str): What was searched for.
@@ -92,6 +95,8 @@ def parse_reference(text: str) -> Reference | None:
     text = text.strip()
     if match := BARE_ID.fullmatch(text):
         return Reference(item_id=int(match.group(1)), bare=True)
+    if EMOTICON_CODE.fullmatch(text):
+        return Reference(item_name=text, bare=True)
 
     if not text or any(character.isspace() for character in text):
         return None

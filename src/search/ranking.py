@@ -24,6 +24,7 @@ KIND_BOOST = 2.0
 APP_BOOST = 3.0
 NAME_PHRASE_BOOST = 3.0
 NAME_WORD_BOOST = 1.5
+EMOTICON_CANDIDATES = 200
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,45 @@ def find_item_by_name(app_id: int, name: str) -> dict[str, Any] | None:
         raise HTTPException(status_code=500, detail=f"Database error: {e!s}") from e
 
     return cast(dict[str, Any], points[0].payload) if points else None
+
+
+def find_emoticon(code: str, query_filter: models.Filter) -> int | None:
+    """
+    Finds an emoticon by its code, like :steamhappy:, among the items that pass the filters of a search. Steam reads
+    codes in any case, so names are matched in any case too: first as typed, in lowercase and in uppercase, then among
+    the emoticons with the code's words in their title. A name in the case typed wins.
+
+    Args:
+        code (str): The emoticon's code, with its colons.
+        query_filter (models.Filter): The search's filters.
+
+    Returns:
+        int | None: The emoticon's ID, None when there's no such emoticon.
+    """
+    emoticons = models.FieldCondition(key="item.category", match=models.MatchValue(value="emoticons"))
+    lookups = [models.FieldCondition(key="item.name", match=models.MatchAny(any=list({code, code.lower(), code.upper()})))]
+    if collection_features().titles:
+        lookups.append(models.FieldCondition(key="item.title", match=models.MatchText(text=code.strip(":"))))
+
+    for lookup in lookups:
+        try:
+            points, _ = qdrant_client.scroll(
+                collection_name=settings.COLLECTION_NAME,
+                scroll_filter=models.Filter(must=[query_filter, emoticons, lookup]),
+                limit=EMOTICON_CANDIDATES,
+                with_payload=["item.name"],
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.exception("Scroll error")
+            raise HTTPException(status_code=500, detail=f"Database error: {e!s}") from e
+
+        names = {int(point.id): str((point.payload or {}).get("item", {}).get("name", "")) for point in points}
+        same = [item_id for item_id, name in names.items() if name.lower() == code.lower()]
+        if same:
+            return next((item_id for item_id in same if names[item_id] == code), same[0])
+
+    return None
 
 
 def matching_items(item_ids: list[int], query_filter: models.Filter) -> list[dict[str, Any]]:

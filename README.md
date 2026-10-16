@@ -27,7 +27,7 @@ Item IDs are the same as in the Points Shop, so an item's page on Steam is `http
 
 The query is read for words that describe the kind of item, so "animated cat avatar" looks for animated avatars of cats, and names of games are recognised, so items from that game rank higher. Items named like the query rank higher too. Turn this off with `parse=false`.
 
-Without a query you're browsing, sorted by `sort`. Filters like `category`, `app_id`, `animated` and `tiled` work either way.
+Without a query you're browsing, sorted by `sort`, which is the Points Shop's own popular order unless you pick another. Filters like `category`, `app_id`, `animated` and `tiled` work either way.
 
 ### Generate
 
