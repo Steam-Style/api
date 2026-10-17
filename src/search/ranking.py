@@ -13,6 +13,7 @@ from clients import (
     collection_features,
     color_embedder,
     get_text_embedding,
+    popular_order,
     qdrant_client,
 )
 from config import settings
@@ -51,6 +52,24 @@ def scroll_items(
             status_code=500, detail=f"Scroll failed: {e!s}") from e
 
     return [cast(dict[str, Any], p.payload) for p in results.points]
+
+
+def popular_items(
+    query_filter: models.Filter,
+    limit: int,
+    offset: int,
+    least_popular: bool,
+) -> list[dict[str, Any]]:
+    """
+    Browses in the Points Shop's popular order, most popular first, or least popular first.
+    """
+    try:
+        item_ids = popular_order.page(query_filter, offset, limit, least_popular)
+    except Exception as e:
+        logger.exception("Scroll error")
+        raise HTTPException(status_code=500, detail=f"Scroll failed: {e!s}") from e
+
+    return matching_items(item_ids, query_filter) if item_ids else []
 
 
 def find_item_by_name(app_id: int, name: str) -> dict[str, Any] | None:

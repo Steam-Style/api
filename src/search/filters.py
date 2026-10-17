@@ -121,12 +121,6 @@ def build_query_filter(data: SearchRequest) -> models.Filter:
 
 
 def sort_query(sort: str | None) -> models.OrderByQuery | models.SampleQuery | None:
-    if sort == "popular":
-        return models.OrderByQuery(order_by=models.OrderBy(
-            key="item.popularity", direction=models.Direction.ASC))
-    if sort == "least_popular":
-        return models.OrderByQuery(order_by=models.OrderBy(
-            key="item.popularity", direction=models.Direction.DESC))
     if sort == "newest":
         return models.OrderByQuery(order_by=models.OrderBy(
             key="timestamps.created_at", direction=models.Direction.DESC))

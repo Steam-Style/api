@@ -16,9 +16,9 @@ from config import settings
 from generator import Generator
 from search.owners import OwnedGames, OwnedGamesError
 from search.parsing import AppIndex
+from search.popularity import PopularOrder
 
 COLLECTION_CHECK_SECONDS = 600
-RANKED_COVERAGE = 0.99
 TEXT_CACHE_SIZE = 1024
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ siglip_embedder = SiglipEmbedder(
     model_name=settings.MODEL_NAME, device=settings.DEVICE, load_vision=False)
 qdrant_client = QdrantClient(url=settings.DATABASE_URL, timeout=10)
 app_index = AppIndex(qdrant_client, settings.COLLECTION_NAME)
+popular_order = PopularOrder(qdrant_client, settings.COLLECTION_NAME)
 owned_games = OwnedGames(settings.STEAM_API_KEY)
 generator = Generator(
     qdrant_client,
@@ -49,7 +50,6 @@ class CollectionFeatures(NamedTuple):
     frames: bool
     titles: bool
     prices: bool
-    popularity: bool
 
 
 _collection_features: tuple[float, CollectionFeatures] | None = None
@@ -58,9 +58,9 @@ _collection_features: tuple[float, CollectionFeatures] | None = None
 def collection_features() -> CollectionFeatures:
     """
     Whether the collection stores the frames of animated items, so text searches can match any frame, has a word index
-    on item titles, so items named like the search rank higher, has prices as numbers to filter by, and has every
-    item's place in the Points Shop's popular order to sort by. Collections made before those were added have none of
-    them. It's read again every few minutes, so they're picked up without a restart.
+    on item titles, so items named like the search rank higher, and has prices as numbers to filter by. Collections
+    made before those were added have none of them. It's read again every few minutes, so they're picked up without a
+    restart.
     """
     global _collection_features
     now = time.monotonic()
@@ -71,17 +71,15 @@ def collection_features() -> CollectionFeatures:
         info = qdrant_client.get_collection(collection_name=settings.COLLECTION_NAME)
     except Exception:
         logger.exception("Could not read the collection config")
-        return CollectionFeatures(frames=False, titles=False, prices=False, popularity=False)
+        return CollectionFeatures(frames=False, titles=False, prices=False)
 
     vectors = info.config.params.vectors
     schema = info.payload_schema or {}
     title = schema.get("item.title")
-    ranked = getattr(schema.get("item.popularity"), "points", 0) or 0
     features = CollectionFeatures(
         frames=isinstance(vectors, dict) and "frames" in vectors,
         titles=title is not None and title.data_type == models.PayloadSchemaType.TEXT,
         prices=getattr(schema.get("item.point_cost"), "data_type", None) == models.PayloadSchemaType.INTEGER,
-        popularity=ranked > 0 and ranked >= (info.points_count or 0) * RANKED_COVERAGE,
     )
     _collection_features = (now, features)
     return features

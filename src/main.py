@@ -8,7 +8,7 @@ from litestar.config.cors import CORSConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Contact, Tag
 
-from clients import app_index, generator
+from clients import app_index, generator, popular_order
 from docs import SiteSwaggerRenderPlugin
 from routes.generate import generate_profiles
 from routes.items import get_item_by_id, get_item_by_name, get_items_batch, list_items
@@ -46,7 +46,11 @@ app = Litestar(
         root_schema_site="swagger"
     ),
     cors_config=cors_config,
-    on_startup=[app_index.refresh_in_background, generator.catalogue.load_in_background],
+    on_startup=[
+        app_index.refresh_in_background,
+        generator.catalogue.load_in_background,
+        popular_order.refresh_in_background,
+    ],
 )
 
 

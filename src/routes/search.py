@@ -11,7 +11,7 @@ from litestar.openapi import ResponseSpec
 from litestar.params import Parameter
 from qdrant_client import models
 
-from clients import app_index, collection_features, owned_apps
+from clients import app_index, collection_features, owned_apps, popular_order
 from schemas import Error, SearchResults
 from search.cache import SearchCache
 from search.filters import SearchRequest, build_query_filter
@@ -24,6 +24,7 @@ from search.ranking import (
     find_emoticon,
     find_item_by_name,
     matching_items,
+    popular_items,
     query_items,
     scroll_items,
 )
@@ -60,8 +61,6 @@ def _search(
     understood = None
     parsed = None
     category_values = category if category is not None else ["all"]
-    if sort in POPULAR_SORTS and not collection_features().popularity:
-        sort = "newest"
     if max_points is not None and not collection_features().prices:
         raise HTTPException(status_code=503, detail="Filtering by price isn't available yet")
     owned = owned_apps(owner) if owner is not None else None
@@ -177,16 +176,13 @@ def _search(
             return {"results": pinned, "understood": understood, "owned_games": owned_games_count}
 
     if not has_query and not has_colors and not has_similar:
-        return {
-            "results": pinned + scroll_items(
-                query_filter=query_filter,
-                limit=data.limit,
-                offset=data.offset,
-                sort=data.sort,
-            ),
-            "understood": understood,
-            "owned_games": owned_games_count,
-        }
+        if data.sort in POPULAR_SORTS and popular_order.ready:
+            browsed = popular_items(query_filter, data.limit, data.offset, data.sort == "least_popular")
+        else:
+            popular_order.refresh_in_background()
+            sort = "newest" if data.sort in POPULAR_SORTS else data.sort
+            browsed = scroll_items(query_filter=query_filter, limit=data.limit, offset=data.offset, sort=sort)
+        return {"results": pinned + browsed, "understood": understood, "owned_games": owned_games_count}
 
     prefetch = build_prefetch(data, query_filter)
 
