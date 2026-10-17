@@ -294,7 +294,8 @@ def search_items(
         search_query, similar_to, app_id, tuple(color or ()), tuple(category) if category is not None else None,
         limit, offset, sort, animated, tiled, transparent, sold_separately, include_unavailable, max_points, owner, parse,
     )
-    cacheable = sort != "random"
+    falls_back = sort in POPULAR_SORTS and not popular_order.ready
+    cacheable = sort != "random" and not falls_back
     cached = search_cache.get(key) if cacheable else None
     if cached is not None:
         return cached
